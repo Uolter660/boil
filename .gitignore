@@ -1,0 +1,9 @@
+# build output
+build/
+*.apk
+*.idsig
+build.log
+
+# signing key: never commit
+*.jks
+*.keystore

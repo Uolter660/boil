@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="BoilTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">#0B0B0B</item>
+        <item name="android:colorPrimaryDark">#0B0B0B</item>
+        <item name="android:colorAccent">#FFFFFF</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">#0B0B0B</item>
+        <item name="android:navigationBarColor">#0B0B0B</item>
+        <item name="android:textColorPrimary">#F2F2F2</item>
+        <item name="android:alertDialogTheme">@style/BoilDialog</item>
+    </style>
+
+    <style name="BoilTheme.Editor">
+        <item name="android:windowFullscreen">true</item>
+    </style>
+
+    <style name="BoilDialog" parent="android:Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#FFFFFF</item>
+        <item name="android:colorBackground">#161616</item>
+        <item name="android:textColorPrimary">#F2F2F2</item>
+        <item name="android:textColorSecondary">#8A8A8A</item>
+    </style>
+</resources>
