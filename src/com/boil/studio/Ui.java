@@ -209,6 +209,13 @@ final class Ui {
             case "ref": return "M3 5H14V14H3ZM9 14V19H21V9H14";
             case "selall": return "M4 8V4H8M16 4H20V8M20 16V20H16M8 20H4V16M9 9H15V15H9Z";
             case "sliders": return "M4 7H13M19 7H20M4 17H6M12 17H20O16 7 2.5O9 17 2.5";
+            case "sym": return "M12 3V21M8 7L4 12L8 17M16 7L20 12L16 17";
+            case "symh": return "M3 12H21M7 8L12 4L17 8M7 16L12 20L17 16";
+            case "symb": return "M12 3V21M3 12H21M7 5L5 7M17 5L19 7M7 19L5 17M17 19L19 17";
+            case "ruler": return "M4 16L16 4L20 8L8 20ZM8 12L10 14M11 9L13 11M14 6L16 8";
+            case "line": return "M5 19L19 5D5 19 2D19 5 2";
+            case "fliph": return "M12 3V21M9 7L3 17H9ZM15 7L21 17H15Z";
+            case "flipv": return "M3 12H21M7 9L17 3V9ZM7 15L17 21V15Z";
             case "boil": return "M3 12C5 8 7 8 9 12C11 16 13 16 15 12C17 8 19 8 21 12";
             case "rotl": return "M8 4H4V8M4 8C6 4.5 9 3.5 12 3.5C16.7 3.5 20.5 7.3 20.5 12C20.5 16.7 16.7 20.5 12 20.5C8.5 20.5 5.5 18.5 4.3 15.5";
             case "rotr": return "M16 4H20V8M20 8C18 4.5 15 3.5 12 3.5C7.3 3.5 3.5 7.3 3.5 12C3.5 16.7 7.3 20.5 12 20.5C15.5 20.5 18.5 18.5 19.7 15.5";

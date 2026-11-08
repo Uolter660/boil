@@ -28,7 +28,7 @@ import java.util.Date;
 import java.util.Locale;
 
 public class HomeActivity extends Activity {
-    private static final String[] SIZE_NAMES = {"Квадрат · 1080 × 1080", "Портрет · 1080 × 1350", "Сторис · 1080 × 1920", "Альбом · 1920 × 1080", "Маленький · 720 × 720"};
+    private static final String[] SIZE_NAMES = {"Квадрат · 1080 × 1080", "Портрет · 1080 × 1350", "Сторис · 1080 × 1920", "Альбом · 1920 × 1080", "Маленький · 720 × 720", "Свой размер…"};
     private static final int[][] SIZES = {{1080, 1080}, {1080, 1350}, {1080, 1920}, {1920, 1080}, {720, 720}};
 
     private LinearLayout grid;
@@ -228,13 +228,72 @@ public class HomeActivity extends Activity {
                 .setItems(SIZE_NAMES, new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {
-                        Intent i = new Intent(HomeActivity.this, EditorActivity.class);
-                        i.putExtra("w", SIZES[which][0]);
-                        i.putExtra("h", SIZES[which][1]);
-                        i.putExtra("name", "Рисунок " + (Storage.list(HomeActivity.this).size() + 1));
-                        startActivity(i);
+                        if (which >= SIZES.length) customSize();
+                        else open(SIZES[which][0], SIZES[which][1], null);
                     }
                 })
+                .show();
+    }
+
+    private void open(int w, int h, String name) {
+        Intent i = new Intent(HomeActivity.this, EditorActivity.class);
+        i.putExtra("w", w);
+        i.putExtra("h", h);
+        i.putExtra("name", name != null && !name.isEmpty() ? name : "Рисунок " + (Storage.list(HomeActivity.this).size() + 1));
+        startActivity(i);
+    }
+
+    private EditText field(LinearLayout parent, String label, String value, boolean number) {
+        TextView l = Ui.text(this, label, 12, Ui.DIM, false);
+        l.setPadding(0, Ui.dp(10), 0, Ui.dp(2));
+        parent.addView(l);
+        EditText e = new EditText(this);
+        e.setText(value);
+        e.setSingleLine(true);
+        e.setSelectAllOnFocus(true);
+        e.setTextColor(Ui.TEXT);
+        if (number) e.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        parent.addView(e);
+        return e;
+    }
+
+    /** Canvas with any width and height (and an optional name). */
+    private void customSize() {
+        LinearLayout box = Ui.col(this);
+        box.setPadding(Ui.dp(22), Ui.dp(4), Ui.dp(22), 0);
+        final EditText name = field(box, "Название", "", false);
+        name.setHint("Рисунок");
+        LinearLayout row = Ui.row(this);
+        LinearLayout wc = Ui.col(this), hc = Ui.col(this);
+        final EditText w = field(wc, "Ширина, px", "1080", true);
+        final EditText h = field(hc, "Высота, px", "1080", true);
+        row.addView(wc, Ui.lpw(1));
+        row.addView(Ui.space(this, 12, 1));
+        row.addView(hc, Ui.lpw(1));
+        box.addView(row);
+        TextView tip = Ui.text(this, "От 64 до 3000 px по каждой стороне.", 11, Ui.FAINT, false);
+        tip.setPadding(0, Ui.dp(8), 0, 0);
+        box.addView(tip);
+        new AlertDialog.Builder(this, dialogTheme())
+                .setTitle("Свой холст")
+                .setView(box)
+                .setPositiveButton("Создать", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int which) {
+                        int cw, ch;
+                        try {
+                            cw = Integer.parseInt(w.getText().toString().trim());
+                            ch = Integer.parseInt(h.getText().toString().trim());
+                        } catch (NumberFormatException e) {
+                            android.widget.Toast.makeText(HomeActivity.this, "Введите ширину и высоту числами", android.widget.Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        cw = Math.max(64, Math.min(3000, cw));
+                        ch = Math.max(64, Math.min(3000, ch));
+                        open(cw, ch, name.getText().toString().trim());
+                    }
+                })
+                .setNegativeButton("Отмена", null)
                 .show();
     }
 

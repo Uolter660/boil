@@ -58,7 +58,15 @@ final class CanvasView extends View {
     private final float[] mv = new float[9];
 
     private static final int M_NONE = 0, M_DRAW = 1, M_GESTURE = 2, M_GEST_END = 3, M_LASSO = 4,
-            M_MOVE = 5, M_PICK = 6, M_FILL = 7, M_IGNORE = 8, M_PIVOT = 9, M_ROTATE = 10, M_SCALE = 11, M_SELGEST = 12;
+            M_MOVE = 5, M_PICK = 6, M_FILL = 7, M_IGNORE = 8, M_PIVOT = 9, M_ROTATE = 10, M_SCALE = 11, M_SELGEST = 12, M_AXIS = 13, M_RULER = 14;
+    /** Symmetry: bit 1 mirrors across the vertical axis x = symX, bit 2 across the horizontal axis y = symY. */
+    int sym;
+    float symX, symY;
+    /** 0 = off, 1 = straight lines, 2 = ruler (lines snap along the ruler's direction). */
+    int ruler;
+    float rAx, rAy, rBx, rBy;
+    private int grab;
+    private float startX, startY;
     /** Two-finger selection transform: start centre, distance, angle and finger ids. */
     private float sgCx, sgCy, sgD0, sgA0;
     private int sgIdA, sgIdB;
@@ -109,6 +117,11 @@ final class CanvasView extends View {
 
     void setDoc(Doc d) {
         doc = d;
+        symX = d.w / 2f;
+        symY = d.h / 2f;
+        rAx = d.w * 0.2f;
+        rBx = d.w * 0.8f;
+        rAy = rBy = d.h * 0.5f;
         layer = Math.min(layer, d.layers.size() - 1);
         frame = Math.min(frame, d.frames - 1);
         fitted = false;
@@ -220,6 +233,9 @@ final class CanvasView extends View {
         extra.live = live;
         extra.sel = sel.isEmpty() ? null : sel;
         extra.dx = selDx;
+        extra.sym = sym;
+        extra.symX = symX;
+        extra.symY = symY;
         extra.rot = selRot;
         extra.sc = selScale;
         extra.cx = rotCx;
@@ -234,7 +250,98 @@ final class CanvasView extends View {
         postInvalidateOnAnimation();
     }
 
+    /** Symmetry axis handles on screen: vertical axis in hp[0..1], horizontal axis in hp[2..3]. */
+    private void axisHandles() {
+        toDoc(getWidth() / 2f, getHeight() / 2f);
+        float cy = Math.max(0, Math.min(doc.h, pt[1])), cx = Math.max(0, Math.min(doc.w, pt[0]));
+        hp[0] = symX;
+        hp[1] = cy;
+        hp[2] = cx;
+        hp[3] = symY;
+        view.mapPoints(hp);
+    }
+
+    private void rulerHandles() {
+        hp[0] = rAx;
+        hp[1] = rAy;
+        hp[2] = rBx;
+        hp[3] = rBy;
+        view.mapPoints(hp);
+    }
+
+    private void knob(Canvas c, float x, float y) {
+        ui.setPathEffect(null);
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0xFFFFFFFF);
+        c.drawCircle(x, y, Ui.dp(11), ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(Ui.dp(1));
+        ui.setColor(0xFF000000);
+        c.drawCircle(x, y, Ui.dp(11), ui);
+        c.drawCircle(x, y, Ui.dp(3), ui);
+    }
+
+    private void guides(Canvas c) {
+        if (sym != 0 && (tool == BRUSH || tool == ERASER)) {
+            float[] q = new float[8];
+            q[0] = symX;
+            q[1] = 0;
+            q[2] = symX;
+            q[3] = doc.h;
+            q[4] = 0;
+            q[5] = symY;
+            q[6] = doc.w;
+            q[7] = symY;
+            view.mapPoints(q);
+            ui.setStyle(Paint.Style.STROKE);
+            ui.setStrokeWidth(Ui.dp(1.5f));
+            ui.setPathEffect(new DashPathEffect(new float[]{Ui.dp(8), Ui.dp(6)}, 0));
+            ui.setColor(0xCC3E7BFA);
+            if ((sym & 1) != 0) c.drawLine(q[0], q[1], q[2], q[3], ui);
+            if ((sym & 2) != 0) c.drawLine(q[4], q[5], q[6], q[7], ui);
+            ui.setPathEffect(null);
+            axisHandles();
+            if ((sym & 1) != 0) knob(c, hp[0], hp[1]);
+            if ((sym & 2) != 0) knob(c, hp[2], hp[3]);
+        }
+        if (ruler == 2 && (tool == BRUSH || tool == ERASER)) {
+            rulerHandles();
+            float dx = hp[2] - hp[0], dy = hp[3] - hp[1], l = (float) Math.hypot(dx, dy);
+            if (l > 1) {
+                dx /= l;
+                dy /= l;
+                float big = 6000;
+                ui.setPathEffect(null);
+                ui.setStyle(Paint.Style.STROKE);
+                ui.setStrokeCap(Paint.Cap.BUTT);
+                ui.setStrokeWidth(Ui.dp(22));
+                ui.setColor(0x26FFFFFF);
+                c.drawLine(hp[0] - dx * big, hp[1] - dy * big, hp[2] + dx * big, hp[3] + dy * big, ui);
+                ui.setStrokeWidth(Ui.dp(1));
+                ui.setColor(0xCCFFFFFF);
+                c.drawLine(hp[0] - dx * big, hp[1] - dy * big, hp[2] + dx * big, hp[3] + dy * big, ui);
+                ui.setStrokeCap(Paint.Cap.ROUND);
+            }
+            knob(c, hp[0], hp[1]);
+            knob(c, hp[2], hp[3]);
+            if (mode == M_RULER) {
+                float ang = (float) Math.toDegrees(Math.atan2(rBy - rAy, rBx - rAx));
+                String label = Math.round(ang) + "°";
+                ui.setStyle(Paint.Style.FILL);
+                ui.setTextSize(Ui.dp(14));
+                ui.setTextAlign(Paint.Align.CENTER);
+                float lx = grab == 0 ? hp[0] : hp[2], ly = (grab == 0 ? hp[1] : hp[3]) - Ui.dp(26);
+                float tw = ui.measureText(label) / 2 + Ui.dp(8);
+                ui.setColor(0xE6161616);
+                c.drawRoundRect(new RectF(lx - tw, ly - Ui.dp(15), lx + tw, ly + Ui.dp(7)), Ui.dp(8), Ui.dp(8), ui);
+                ui.setColor(0xFFFFFFFF);
+                c.drawText(label, lx, ly, ui);
+            }
+        }
+    }
+
     private void overlays(Canvas c, float t) {
+        guides(c);
         float dash = Ui.dp(5);
         if (lassoActive) {
             tmpPath.set(lasso);
@@ -547,6 +654,32 @@ final class CanvasView extends View {
         switch (tool) {
             case BRUSH:
             case ERASER:
+                if (sym != 0) {
+                    axisHandles();
+                    if ((sym & 1) != 0 && Math.hypot(downX - hp[0], downY - hp[1]) < Ui.dp(24)) {
+                        grab = 0;
+                        mode = M_AXIS;
+                        break;
+                    }
+                    if ((sym & 2) != 0 && Math.hypot(downX - hp[2], downY - hp[3]) < Ui.dp(24)) {
+                        grab = 1;
+                        mode = M_AXIS;
+                        break;
+                    }
+                }
+                if (ruler == 2) {
+                    rulerHandles();
+                    if (Math.hypot(downX - hp[0], downY - hp[1]) < Ui.dp(26)) {
+                        grab = 0;
+                        mode = M_RULER;
+                        break;
+                    }
+                    if (Math.hypot(downX - hp[2], downY - hp[3]) < Ui.dp(26)) {
+                        grab = 1;
+                        mode = M_RULER;
+                        break;
+                    }
+                }
                 startStroke(x, y, pressure(e, -1));
                 mode = M_DRAW;
                 if (host != null) host.onDrawing(true);
@@ -613,6 +746,30 @@ final class CanvasView extends View {
 
     private void toolMove(MotionEvent e) {
         switch (mode) {
+            case M_AXIS:
+                toDoc(e.getX(), e.getY());
+                if (grab == 0) symX = Math.max(0, Math.min(doc.w, pt[0]));
+                else symY = Math.max(0, Math.min(doc.h, pt[1]));
+                break;
+            case M_RULER: {
+                toDoc(e.getX(), e.getY());
+                float ox = grab == 0 ? rBx : rAx, oy = grab == 0 ? rBy : rAy;
+                float len = (float) Math.hypot(pt[0] - ox, pt[1] - oy);
+                double ang = Math.toDegrees(Math.atan2(pt[1] - oy, pt[0] - ox));
+                double snap = Math.round(ang / 15.0) * 15.0; // magnet to 0°, 15°, 30°, 45°…
+                if (Math.abs(ang - snap) < 2.5) {
+                    pt[0] = ox + len * (float) Math.cos(Math.toRadians(snap));
+                    pt[1] = oy + len * (float) Math.sin(Math.toRadians(snap));
+                }
+                if (grab == 0) {
+                    rAx = pt[0];
+                    rAy = pt[1];
+                } else {
+                    rBx = pt[0];
+                    rBy = pt[1];
+                }
+                break;
+            }
             case M_PIVOT:
                 movePivot(e.getX(), e.getY());
                 break;
@@ -724,6 +881,8 @@ final class CanvasView extends View {
         live.seed = rnd.nextInt(1 << 20);
         sx = x;
         sy = y;
+        startX = x;
+        startY = y;
         lp = p;
         lastX = x;
         lastY = y;
@@ -743,11 +902,40 @@ final class CanvasView extends View {
             sx += (pt[0] - sx) * k;
             sy += (pt[1] - sy) * k;
             lp += (pr - lp) * 0.4f;
-            if (Math.hypot(sx - lastX, sy - lastY) >= min) {
+            if (ruler == 0 && Math.hypot(sx - lastX, sy - lastY) >= min) {
                 live.add(sx, sy, lp);
                 lastX = sx;
                 lastY = sy;
             }
+        }
+        if (ruler != 0) shapeLine();
+    }
+
+    /** Straight-line and ruler modes: the stroke becomes one straight segment, finely sampled so it still jitters. */
+    private void shapeLine() {
+        float ax = startX, ay = startY, tx = sx, ty = sy;
+        if (ruler == 2) {
+            float dx = rBx - rAx, dy = rBy - rAy, l = (float) Math.hypot(dx, dy);
+            if (l > 1) {
+                dx /= l;
+                dy /= l;
+                float px = startX - rAx, py = startY - rAy;
+                float along = px * dx + py * dy, perp = -px * dy + py * dx;
+                if (Math.abs(perp) < Ui.dp(32) / scale()) { // starting on the ruler: draw right on its edge
+                    ax = rAx + dx * along;
+                    ay = rAy + dy * along;
+                }
+                float k = (sx - ax) * dx + (sy - ay) * dy;
+                tx = ax + dx * k;
+                ty = ay + dy * k;
+            }
+        }
+        live.clearPoints();
+        float len = (float) Math.hypot(tx - ax, ty - ay);
+        int steps = Math.max(1, (int) (len / 2));
+        for (int i = 0; i <= steps; i++) {
+            float u = i / (float) steps;
+            live.add(ax + (tx - ax) * u, ay + (ty - ay) * u, lp);
         }
     }
 
@@ -755,7 +943,7 @@ final class CanvasView extends View {
         if (live == null) return;
         toDoc(e.getX(), e.getY());
         float k = 1f - settings().stabilize * 0.9f;
-        for (int i = 0; i < 4 && Math.hypot(pt[0] - sx, pt[1] - sy) > 1.5f / scale(); i++) {
+        for (int i = 0; ruler == 0 && i < 4 && Math.hypot(pt[0] - sx, pt[1] - sy) > 1.5f / scale(); i++) {
             sx += (pt[0] - sx) * Math.max(k, 0.5f);
             sy += (pt[1] - sy) * Math.max(k, 0.5f);
             live.add(sx, sy, lp);
@@ -763,6 +951,13 @@ final class CanvasView extends View {
         history.push(this);
         Cel cel = activeCel();
         cel.items.add(live);
+        for (int m = 1; m <= 3; m++) {
+            if ((sym & m) != m) continue;
+            Item mirror = live;
+            if ((m & 1) != 0) mirror = mirror.flipped(true, symX, symY);
+            if ((m & 2) != 0) mirror = mirror.flipped(false, symX, symY);
+            cel.items.add(mirror);
+        }
         cel.touch();
         live = null;
         changed();
@@ -777,28 +972,125 @@ final class CanvasView extends View {
         return r;
     }
 
+    /**
+     * Selects only what is inside the lasso: strokes crossing the outline are cut into pieces (with
+     * invisible seams) and fills are split by the outline; pictures and merged groups go by their centre.
+     */
     private void finishLasso() {
         lassoActive = false;
         lasso.close();
         Region clip = new Region(-doc.w, -doc.h, doc.w * 2, doc.h * 2);
         Region r = new Region();
         r.setPath(lasso, clip);
+        Path cut = new Path(lasso);
         lasso.reset();
         sel.clear();
-        for (Item it : activeCel().items) {
+        Cel cel = activeCel();
+        ArrayList<Item> next = new ArrayList<>();
+        boolean split = false;
+        for (Item it : cel.items) {
             if (it instanceof Stroke) {
                 Stroke s = (Stroke) it;
-                int step = Math.max(1, s.n / 40), in = 0, cnt = 0;
-                for (int i = 0; i < s.n; i += step) {
-                    cnt++;
-                    if (r.contains((int) s.x[i], (int) s.y[i])) in++;
+                boolean[] in = new boolean[s.n];
+                int cnt = 0;
+                for (int i = 0; i < s.n; i++) {
+                    in[i] = r.contains((int) s.x[i], (int) s.y[i]);
+                    if (in[i]) cnt++;
                 }
-                if (in > 0 && in * 10 >= cnt * 6) sel.add(it);
-            } else if (r.contains((int) it.bounds.centerX(), (int) it.bounds.centerY())) {
-                sel.add(it);
+                if (cnt == 0) {
+                    next.add(s);
+                } else if (cnt == s.n) {
+                    next.add(s);
+                    sel.add(s);
+                } else {
+                    split = true;
+                    ArrayList<Boolean> flags = new ArrayList<>();
+                    ArrayList<Stroke> pieces = s.split(in, flags);
+                    for (int k = 0; k < pieces.size(); k++) {
+                        next.add(pieces.get(k));
+                        if (flags.get(k)) sel.add(pieces.get(k));
+                    }
+                }
+            } else if (it instanceof Fill && ((Fill) it).angle == 0) {
+                Fill f = (Fill) it;
+                byte[] m = lassoMask(cut, f);
+                byte[] inD = new byte[f.data.length], outD = new byte[f.data.length];
+                int ni = 0, no = 0;
+                for (int i = 0; i < m.length; i++) {
+                    if (f.data[i] == 0) continue;
+                    if (m[i] != 0) {
+                        inD[i] = f.data[i];
+                        ni++;
+                    } else {
+                        outD[i] = f.data[i];
+                        no++;
+                    }
+                }
+                if (ni == 0) {
+                    next.add(f);
+                } else if (no == 0) {
+                    next.add(f);
+                    sel.add(f);
+                } else {
+                    split = true;
+                    Fill fin = f.withData(inD);
+                    next.add(f.withData(outD));
+                    next.add(fin);
+                    sel.add(fin);
+                }
+            } else {
+                next.add(it);
+                if (r.contains((int) it.bounds.centerX(), (int) it.bounds.centerY())) sel.add(it);
             }
         }
+        if (split) {
+            history.push(this);
+            cel.items.clear();
+            cel.items.addAll(next);
+            cel.touch();
+            changed();
+        }
         if (host != null) host.onSelection(!sel.isEmpty());
+    }
+
+    /** Lasso coverage over a fill's mask area, one byte per pixel (non-zero = inside). */
+    private static byte[] lassoMask(Path cut, Fill f) {
+        Bitmap m = Bitmap.createBitmap(f.w, f.h, Bitmap.Config.ALPHA_8);
+        Canvas c = new Canvas(m);
+        c.translate(-f.left, -f.top);
+        Paint p = new Paint();
+        p.setColor(0xFF000000);
+        p.setStyle(Paint.Style.FILL);
+        c.drawPath(cut, p);
+        int rb = m.getRowBytes();
+        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(rb * f.h);
+        m.copyPixelsToBuffer(bb);
+        m.recycle();
+        byte[] raw = bb.array(), out = new byte[f.w * f.h];
+        for (int y = 0; y < f.h; y++) System.arraycopy(raw, y * rb, out, y * f.w, f.w);
+        return out;
+    }
+
+    /** Mirrors the selection across the layer's base point (or its own centre). */
+    void flipSelection(boolean horizontal) {
+        if (sel.isEmpty()) return;
+        history.push(this);
+        RectF b = selBounds(0);
+        float cx = pivotX(b), cy = pivotY(b);
+        Cel cel = activeCel();
+        HashSet<Item> out = new HashSet<>();
+        for (int i = 0; i < cel.items.size(); i++) {
+            Item it = cel.items.get(i);
+            if (sel.contains(it)) {
+                Item m = it.flipped(horizontal, cx, cy);
+                cel.items.set(i, m);
+                out.add(m);
+            }
+        }
+        cel.touch();
+        sel.clear();
+        sel.addAll(out);
+        changed();
     }
 
     private void commitMove() {

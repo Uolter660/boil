@@ -113,6 +113,9 @@ abstract class Item {
     /** Copy rotated by deg degrees around (cx, cy). */
     abstract Item rotated(float deg, float cx, float cy);
 
+    /** Mirror copy: horizontal flips left-right across x = cx, otherwise top-bottom across y = cy. */
+    abstract Item flipped(boolean horizontal, float cx, float cy);
+
     /** Bounds of a w×h box at (left, top) turned by deg around its own centre. */
     static void boxBounds(RectF out, float left, float top, float w, float h, float deg) {
         float cx = left + w / 2, cy = top + h / 2;
@@ -172,6 +175,17 @@ final class Picture extends Item {
         turn(c, left + w / 2, top + h / 2, deg, cx, cy);
         return new Picture(bmp, encoded, c[0] - w / 2, c[1] - h / 2, w, h, angle + deg);
     }
+
+    @Override
+    Item flipped(boolean horizontal, float cx, float cy) {
+        android.graphics.Matrix m = new android.graphics.Matrix();
+        m.setScale(horizontal ? -1 : 1, horizontal ? 1 : -1);
+        Bitmap b = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, true);
+        float ncx = left + w / 2, ncy = top + h / 2;
+        if (horizontal) ncx = 2 * cx - ncx;
+        else ncy = 2 * cy - ncy;
+        return new Picture(b, Images.encode(b), ncx - w / 2, ncy - h / 2, w, h, -angle);
+    }
 }
 
 /**
@@ -212,6 +226,13 @@ final class Group extends Item {
         for (Item it : items) m.add(it.rotated(deg, cx, cy));
         return new Group(m, fx);
     }
+
+    @Override
+    Item flipped(boolean horizontal, float cx, float cy) {
+        ArrayList<Item> m = new ArrayList<>();
+        for (Item it : items) m.add(it.flipped(horizontal, cx, cy));
+        return new Group(m, fx);
+    }
 }
 
 final class Stroke extends Item {
@@ -223,6 +244,41 @@ final class Stroke extends Item {
     /** Renderer-owned path cache, one slot per boil frame and variant. */
     Path[] cache;
     private float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+    /**
+     * For a piece cut out of a longer stroke: arc length before this piece (keeps the jitter
+     * pattern identical) and whether each end is a cut (no taper there, so the seam is invisible).
+     */
+    float arc0;
+    boolean cutStart, cutEnd;
+
+    void clearPoints() {
+        n = 0;
+        minX = minY = Float.MAX_VALUE;
+        maxX = maxY = -Float.MAX_VALUE;
+        bounds.setEmpty();
+        cache = null;
+    }
+
+    /** Splits into runs of points with the same inside flag; returns pieces, marking which are inside. */
+    ArrayList<Stroke> split(boolean[] inside, ArrayList<Boolean> pieceInside) {
+        ArrayList<Stroke> out = new ArrayList<>();
+        int i = 0;
+        while (i < n) {
+            int j = i;
+            while (j + 1 < n && inside[j + 1] == inside[i]) j++;
+            // pieces overlap by one point so the line stays continuous across the cut
+            int from = i > 0 ? i - 1 : i;
+            Stroke s = copyStyle();
+            s.arc0 = arc0 + arc[from];
+            s.cutStart = from > 0 || cutStart;
+            s.cutEnd = j < n - 1 || cutEnd;
+            for (int k = from; k <= j; k++) s.add(x[k], y[k], p[k]);
+            out.add(s);
+            pieceInside.add(inside[i]);
+            i = j + 1;
+        }
+        return out;
+    }
 
     void add(float px, float py, float pp) {
         if (n == x.length) {
@@ -271,6 +327,9 @@ final class Stroke extends Item {
         s.eraser = eraser;
         s.spacing = spacing;
         s.echo = echo;
+        s.arc0 = arc0;
+        s.cutStart = cutStart;
+        s.cutEnd = cutEnd;
         return s;
     }
 
@@ -285,7 +344,15 @@ final class Stroke extends Item {
     Item scaled(float sc, float cx, float cy) {
         Stroke s = copyStyle();
         s.size = Math.max(0.3f, size * sc);
+        s.arc0 = arc0 * sc;
         for (int i = 0; i < n; i++) s.add(cx + (x[i] - cx) * sc, cy + (y[i] - cy) * sc, p[i]);
+        return s;
+    }
+
+    @Override
+    Item flipped(boolean horizontal, float cx, float cy) {
+        Stroke s = copyStyle();
+        for (int i = 0; i < n; i++) s.add(horizontal ? 2 * cx - x[i] : x[i], horizontal ? y[i] : 2 * cy - y[i], p[i]);
         return s;
     }
 
@@ -363,6 +430,28 @@ final class Fill extends Item {
         Fill f = copyLook(new Fill(mask, data, w, h, c[0] - w / 2f, c[1] - h / 2f));
         f.setAngle(angle + deg);
         return f;
+    }
+
+    @Override
+    Item flipped(boolean horizontal, float cx, float cy) {
+        byte[] d = new byte[w * h];
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int sx = horizontal ? w - 1 - x : x, sy = horizontal ? y : h - 1 - y;
+                d[y * w + x] = data[sy * w + sx];
+            }
+        }
+        float ncx = left + w / 2f, ncy = top + h / 2f;
+        if (horizontal) ncx = 2 * cx - ncx;
+        else ncy = 2 * cy - ncy;
+        Fill f = copyLook(new Fill(d, w, h, ncx - w / 2f, ncy - h / 2f));
+        f.setAngle(-angle);
+        return f;
+    }
+
+    /** Same fill with a different mask of the same size (used when the lasso cuts a fill). */
+    Fill withData(byte[] d) {
+        return copyLook(new Fill(d, w, h, left, top));
     }
 
     void setAngle(float a) {
@@ -473,7 +562,7 @@ final class Layer {
 }
 
 final class Doc {
-    static final int MAGIC = 0x424F494C, VERSION = 5;
+    static final int MAGIC = 0x424F494C, VERSION = 6;
 
     String name = "Без названия";
     int w, h, bg = 0xFFFFFFFF, fps = 8, frames = 1;
@@ -745,6 +834,9 @@ final class Doc {
         o.writeBoolean(s.eraser);
         o.writeFloat(s.spacing);
         o.writeBoolean(s.echo);
+        o.writeFloat(s.arc0);
+        o.writeBoolean(s.cutStart);
+        o.writeBoolean(s.cutEnd);
         o.writeInt(s.n);
         for (int i = 0; i < s.n; i++) {
             o.writeFloat(s.x[i]);
@@ -838,6 +930,11 @@ final class Doc {
         if (ver >= 2) {
             s.spacing = in.readFloat();
             s.echo = in.readBoolean();
+        }
+        if (ver >= 6) {
+            s.arc0 = in.readFloat();
+            s.cutStart = in.readBoolean();
+            s.cutEnd = in.readBoolean();
         }
         int n = in.readInt();
         for (int i = 0; i < n; i++) {

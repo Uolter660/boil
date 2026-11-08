@@ -10,7 +10,7 @@ rm -rf $OUT && mkdir -p $OUT/classes $OUT/gen
 
 aapt2 compile --dir res -o $OUT/res.zip
 aapt2 link -o $OUT/base.apk -I $JAR --manifest AndroidManifest.xml $OUT/res.zip \
-  --java $OUT/gen --min-sdk-version 21 --target-sdk-version 34 --version-code 8 --version-name 1.7
+  --java $OUT/gen --min-sdk-version 21 --target-sdk-version 34 --version-code 9 --version-name 1.8
 
 javac -nowarn -encoding UTF-8 -source 8 -target 8 -bootclasspath $JAR -classpath $JAR \
   -d $OUT/classes $(find src $OUT/gen -name '*.java') 2>&1 | grep -v "bootstrap class path\|^warning\|^1 warning\|options were not\|-Xlint:-options" || true

@@ -27,6 +27,9 @@ final class Renderer {
         float dx, dy;
         /** Live rotate/scale preview of the selection around (cx, cy). */
         float rot, sc = 1, cx, cy;
+        /** Symmetry: bit 1 mirrors across x = symX, bit 2 across y = symY. */
+        int sym;
+        float symX, symY;
         boolean onion, freezeActive;
     }
 
@@ -113,7 +116,16 @@ final class Renderer {
                 drawCel(c, cel, t, sel, true);
                 c.restore();
             }
-            if (hasLive) drawStroke(c, ex.live, t);
+            if (hasLive) {
+                drawStroke(c, ex.live, t);
+                for (int m = 1; m <= 3; m++) {
+                    if ((ex.sym & m) != m) continue;
+                    c.save();
+                    c.scale((m & 1) != 0 ? -1 : 1, (m & 2) != 0 ? -1 : 1, ex.symX, ex.symY);
+                    drawStroke(c, ex.live, t);
+                    c.restore();
+                }
+            }
             c.restoreToCount(save);
         }
     }
@@ -153,18 +165,42 @@ final class Renderer {
         drawItems(c, cel.items, t, sel, onlySel);
     }
 
+    /**
+     * Draws items in order. Eraser strokes and pictures are boundaries: an eraser only affects what
+     * came before it, and a picture covers what came before it. Between two boundaries, fills go under
+     * the line art so colour meets the (jittering) lines without gaps.
+     */
     private void drawItems(Canvas c, ArrayList<Item> items, float t, Set<Item> sel, boolean onlySel) {
-        for (int pass = 0; pass < 2; pass++) {
-            for (int i = 0, n = items.size(); i < n; i++) {
-                Item it = items.get(i);
-                boolean include = sel == null ? !onlySel : sel.contains(it) == onlySel;
-                if (!include) continue;
-                if (pass == 0 && it instanceof Picture) drawPicture(c, (Picture) it);
-                else if (pass == 0 && it instanceof Fill) drawFill(c, (Fill) it, t);
-                else if (pass == 1 && it instanceof Stroke) drawStroke(c, (Stroke) it, t);
-                else if (pass == 1 && it instanceof Group) drawGroup(c, (Group) it, t);
+        int n = items.size(), start = 0;
+        while (start <= n) {
+            int end = start;
+            while (end < n && !isBoundary(items.get(end))) end++;
+            for (int pass = 0; pass < 2; pass++) {
+                for (int i = start; i < end; i++) {
+                    Item it = items.get(i);
+                    if (!included(it, sel, onlySel)) continue;
+                    if (pass == 0 && it instanceof Fill) drawFill(c, (Fill) it, t);
+                    else if (pass == 1 && it instanceof Stroke) drawStroke(c, (Stroke) it, t);
+                    else if (pass == 1 && it instanceof Group) drawGroup(c, (Group) it, t);
+                }
             }
+            if (end < n) {
+                Item b = items.get(end);
+                if (included(b, sel, onlySel)) {
+                    if (b instanceof Picture) drawPicture(c, (Picture) b);
+                    else drawStroke(c, (Stroke) b, t);
+                }
+            }
+            start = end + 1;
         }
+    }
+
+    private static boolean isBoundary(Item it) {
+        return it instanceof Picture || (it instanceof Stroke && ((Stroke) it).eraser);
+    }
+
+    private static boolean included(Item it, Set<Item> sel, boolean onlySel) {
+        return sel == null ? !onlySel : sel.contains(it) == onlySel;
     }
 
     private final RectF picRect = new RectF();
@@ -405,15 +441,15 @@ final class Renderer {
                 by[i] = s.y[i];
                 continue;
             }
-            float u = s.arc[i] / lam;
+            float u = (s.arc[i] + s.arc0) / lam;
             bx[i] = s.x[i] + wob * noise(sd, u);
             by[i] = s.y[i] + wob * noise(sd + 4111, u + 17.3f);
         }
         if (variant == 1) { // pencil's second strand sits slightly off the first
             float off = Math.max(0.6f, s.size * 0.35f);
             for (int i = 0; i < n; i++) {
-                bx[i] += off * noise(s.seed + 31, s.arc[i] / 40f);
-                by[i] += off * noise(s.seed + 57, s.arc[i] / 40f);
+                bx[i] += off * noise(s.seed + 31, (s.arc[i] + s.arc0) / 40f);
+                by[i] += off * noise(s.seed + 57, (s.arc[i] + s.arc0) / 40f);
             }
         }
     }
@@ -432,12 +468,12 @@ final class Renderer {
             int sd = s.seed + k * 1013 + 99;
             for (int i = 0; i < n; i++) {
                 float pr = s.p[i];
-                float tp = Math.min(1f, Math.min(s.arc[i], total - s.arc[i]) / taper);
+                float tp = Math.min(1f, Math.min(s.cutStart ? 1e9f : s.arc[i], s.cutEnd ? 1e9f : total - s.arc[i]) / taper);
                 float w;
                 if (style == Brush.INK) {
                     w = s.size * 0.5f * (0.2f + 0.8f * pr) * (0.25f + 0.75f * (float) Math.sqrt(tp));
                 } else {
-                    float blob = 1 + 0.22f * noise(sd, s.arc[i] / (s.size * 1.2f + 4));
+                    float blob = 1 + 0.22f * noise(sd, (s.arc[i] + s.arc0) / (s.size * 1.2f + 4));
                     w = s.size * 0.5f * (0.8f + 0.2f * pr) * blob * (0.6f + 0.4f * (float) Math.sqrt(tp));
                 }
                 hw[i] = Math.max(0.35f, w);
@@ -474,12 +510,12 @@ final class Renderer {
                 float tx = s.x[i1] - s.x[i0], ty = s.y[i1] - s.y[i0];
                 float l = (float) Math.hypot(tx, ty);
                 float ux = l < 1e-4f ? 0 : -ty / l, uy = l < 1e-4f ? 1 : tx / l;
-                float a = s.arc[i];
-                float uL = a / lamL, uH = a / lamH;
+                float a = s.arc[i], ua = a + s.arc0;
+                float uL = ua / lamL, uH = ua / lamH;
                 float side = lane + s.size * 0.22f * noise(sd + 5, uL) * (count > 1 ? 1 : 0.4f);
                 bx[i] = s.x[i] + wob * (0.55f * noise(sd, uL) + 0.22f * noise(sd + 11, uH)) + ux * side;
                 by[i] = s.y[i] + wob * (0.55f * noise(sd + 4111, uL + 17.3f) + 0.22f * noise(sd + 13, uH + 5.1f)) + uy * side;
-                float tp = Math.min(1f, Math.min(a, total - a) / taper);
+                float tp = Math.min(1f, Math.min(s.cutStart ? 1e9f : a, s.cutEnd ? 1e9f : total - a) / taper);
                 float rough = 1 + 0.35f * noise(sd + 23, uH * 1.3f);
                 hw[i] = Math.max(0.3f, s.size * 0.5f * strandW * (0.15f + 0.85f * (float) Math.sqrt(tp))
                         * (0.8f + 0.2f * s.p[i]) * rough);

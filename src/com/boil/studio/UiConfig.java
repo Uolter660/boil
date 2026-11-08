@@ -12,9 +12,9 @@ import java.util.ArrayList;
  */
 final class UiConfig {
     static final String[] IDS = {"menu", "brush", "eraser", "lasso", "picker", "fill", "fx", "layers", "color",
-            "undo", "redo", "size", "opacity", "play", "frames", "addFrame", "dupFrame", "delFrame", "onion", "boil", "fps"};
+            "undo", "redo", "symmetry", "ruler", "size", "opacity", "play", "frames", "addFrame", "dupFrame", "delFrame", "onion", "boil", "fps"};
     static final String[] NAMES = {"Меню", "Кисть", "Ластик", "Лассо", "Пипетка", "Заливка", "Эффект слоя", "Слои", "Цвет",
-            "Отменить", "Повторить", "Размер кисти", "Непрозрачность кисти", "Воспроизведение", "Лента кадров", "Новый кадр",
+            "Отменить", "Повторить", "Симметрия", "Линейка", "Размер кисти", "Непрозрачность кисти", "Воспроизведение", "Лента кадров", "Новый кадр",
             "Дублировать кадр", "Удалить кадр", "Калька", "Дрожание линий", "Скорость кадров"};
     static final String[] BAR_NAMES = {"Верхняя", "Левая", "Нижняя", "Правая"};
     static final String[] BAR_SHORT = {"Верх", "Лево", "Низ", "Право"};
@@ -38,7 +38,7 @@ final class UiConfig {
         for (ArrayList<String> b : bars) b.clear();
         hidden.clear();
         add(TOP, "menu", "brush", "eraser", "lasso", "picker", "fill", "fx", "layers", "color");
-        add(LEFT, "size", "opacity", "undo", "redo");
+        add(LEFT, "size", "opacity", "undo", "redo", "symmetry", "ruler");
         add(BOTTOM, "play", "frames", "addFrame", "dupFrame", "delFrame", "onion", "boil", "fps");
         vertical[TOP] = false;
         vertical[LEFT] = true;

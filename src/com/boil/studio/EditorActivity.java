@@ -49,7 +49,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
 
     private FrameLayout root, overlay;
     private CanvasView cv;
-    private Ui.Icon brushI, eraserI, lassoI, pickerI, fillI, fxI, layersI, undoI, redoI, playI, onionI, boilI;
+    private Ui.Icon brushI, eraserI, lassoI, pickerI, fillI, fxI, layersI, undoI, redoI, playI, onionI, boilI, symI, rulerI;
     private Ui.Swatch colorS;
     private Ui.VSlider sizeS, alphaS;
     private LinearLayout frameStrip, selBar;
@@ -194,6 +194,18 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             @Override
             public void onClick(View v) {
                 cv.rotateSelection(1);
+            }
+        }));
+        rest.addView(icon("fliph", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.flipSelection(true);
+            }
+        }));
+        rest.addView(icon("flipv", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.flipSelection(false);
             }
         }));
         rest.addView(icon("copy", new View.OnClickListener() {
@@ -341,6 +353,27 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         });
         controls.put("undo", undoI);
         controls.put("redo", redoI);
+        symI = icon("sym", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.sym = (cv.sym + 1) % 4;
+                syncGuides();
+                showHint(new String[]{"Симметрия выключена", "Симметрия: слева и справа",
+                        "Симметрия: сверху и снизу", "Симметрия: в четыре стороны"}[cv.sym]
+                        + (cv.sym != 0 ? " · ось можно двигать за кружок" : ""), true);
+            }
+        });
+        rulerI = icon("ruler", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.ruler = (cv.ruler + 1) % 3;
+                syncGuides();
+                showHint(new String[]{"Линейка выключена", "Прямые линии: тяните от начала до конца",
+                        "Линейка: линии идут вдоль неё · кружки двигают и наклоняют"}[cv.ruler], true);
+            }
+        });
+        controls.put("symmetry", symI);
+        controls.put("ruler", rulerI);
         sizeS = new Ui.VSlider(this, new Ui.OnSlide() {
             @Override
             void change(float v) {
@@ -688,6 +721,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         onionI.setActive(cv.onion);
         boilI.setActive(cv.doc.boil);
         colorS.setColor(cv.color);
+        syncGuides();
     }
 
     private void syncTools() {
@@ -953,6 +987,13 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         card.setAlpha(0);
         card.setTranslationY(-dp(8));
         card.animate().alpha(1).translationY(0).setDuration(150).start();
+    }
+
+    private void syncGuides() {
+        symI.setName(cv.sym == 2 ? "symh" : cv.sym == 3 ? "symb" : "sym");
+        symI.setActive(cv.sym != 0);
+        rulerI.setName(cv.ruler == 1 ? "line" : "ruler");
+        rulerI.setActive(cv.ruler != 0);
     }
 
     private void toggleBoil() {
