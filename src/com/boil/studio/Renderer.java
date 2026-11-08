@@ -317,7 +317,7 @@ final class Renderer {
         }
         p.setAlpha(a);
         int style = s.eraser ? Brush.MARKER : s.brush;
-        if (boilOn && s.echo && s.frames > 1 && (Brush.doodle(style) || style == Brush.INK)) {
+        if (boilOn && s.echo && s.frames > 1 && (Brush.doodle(style) || Brush.ribbon(style))) {
             // frame echo: the previous boil frame lingers faintly under the current one
             p.setStyle(Paint.Style.FILL);
             p.setAlpha(Math.round(a * 0.3f));
@@ -329,9 +329,30 @@ final class Renderer {
             case Brush.STICKY:
             case Brush.TRIO:
             case Brush.INK:
+            case Brush.PEN:
+            case Brush.PAINT:
+            case Brush.CALLIG:
             case Brush.SPRAY:
                 p.setStyle(Paint.Style.FILL);
                 c.drawPath(path(s, k, 0), p);
+                break;
+            case Brush.SOFT: {
+                // airbrush: stacked passes from wide and faint to narrow, giving a soft falloff
+                Path path = path(s, k, 0);
+                for (int i = 0; i < 6; i++) {
+                    line(p, Math.max(0.5f, s.size * (1f - i / 6f)));
+                    p.setAlpha(Math.round(a * 0.28f));
+                    c.drawPath(path, p);
+                }
+                break;
+            }
+            case Brush.CRAYON:
+                line(p, Math.max(0.5f, s.size * 0.55f));
+                p.setAlpha(Math.round(a * 0.7f));
+                c.drawPath(path(s, k, 0), p);
+                p.setStyle(Paint.Style.FILL);
+                p.setAlpha(a);
+                c.drawPath(path(s, k, 1), p);
                 break;
             case Brush.PENCIL:
                 line(p, s.size);
@@ -462,25 +483,13 @@ final class Renderer {
         }
         displace(s, k, variant);
         int n = s.n;
-        if (style == Brush.INK) {
-            float total = s.length();
-            float taper = Math.max(4, s.size * 2.5f);
-            int sd = s.seed + k * 1013 + 99;
-            for (int i = 0; i < n; i++) {
-                float pr = s.p[i];
-                float tp = Math.min(1f, Math.min(s.cutStart ? 1e9f : s.arc[i], s.cutEnd ? 1e9f : total - s.arc[i]) / taper);
-                float w;
-                if (style == Brush.INK) {
-                    w = s.size * 0.5f * (0.2f + 0.8f * pr) * (0.25f + 0.75f * (float) Math.sqrt(tp));
-                } else {
-                    float blob = 1 + 0.22f * noise(sd, (s.arc[i] + s.arc0) / (s.size * 1.2f + 4));
-                    w = s.size * 0.5f * (0.8f + 0.2f * pr) * blob * (0.6f + 0.4f * (float) Math.sqrt(tp));
-                }
-                hw[i] = Math.max(0.35f, w);
-            }
+        if (Brush.ribbon(style)) {
+            ribbonWidths(s, style, n);
             outline(out, n);
         } else if (style == Brush.SPRAY) {
             spray(s, k, out);
+        } else if (style == Brush.CRAYON && variant == 1) {
+            crayonGrain(s, k, out);
         } else {
             center(out, bx, by, n);
         }
@@ -525,6 +534,64 @@ final class Renderer {
             } else {
                 outline(tmp, n);
                 out.addPath(tmp);
+            }
+        }
+    }
+
+    /** Half widths for the outline brushes: pressure, tapered ends, and the calligraphy nib angle. */
+    private void ribbonWidths(Stroke s, int style, int n) {
+        float total = s.length();
+        for (int i = 0; i < n; i++) {
+            float pr = s.p[i];
+            float ds = s.cutStart ? 1e9f : s.arc[i], de = s.cutEnd ? 1e9f : total - s.arc[i];
+            float w;
+            if (style == Brush.PEN) {
+                float tp = Math.min(1f, Math.min(ds, de) / Math.max(2, s.size * 1.2f));
+                w = s.size * 0.5f * (0.6f + 0.4f * pr) * (0.5f + 0.5f * (float) Math.sqrt(tp));
+            } else if (style == Brush.PAINT) {
+                float tp = Math.min(1f, Math.min(ds, de) / Math.max(6, s.size * 6));
+                w = s.size * 0.5f * (0.1f + 0.9f * pr) * (float) Math.sqrt(tp);
+            } else if (style == Brush.CALLIG) {
+                int i0 = Math.max(0, i - 2), i1 = Math.min(n - 1, i + 2);
+                double th = Math.atan2(s.y[i1] - s.y[i0], s.x[i1] - s.x[i0]);
+                float nib = (float) Math.abs(Math.sin(th + Math.PI / 4)); // flat nib held at 45°
+                float tp = Math.min(1f, Math.min(ds, de) / Math.max(2, s.size * 0.8f));
+                w = s.size * 0.5f * (0.12f + 0.88f * nib) * (0.7f + 0.3f * pr) * (0.4f + 0.6f * tp);
+            } else {
+                float tp = Math.min(1f, Math.min(ds, de) / Math.max(4, s.size * 2.5f));
+                w = s.size * 0.5f * (0.2f + 0.8f * pr) * (0.25f + 0.75f * (float) Math.sqrt(tp));
+            }
+            hw[i] = Math.max(0.35f, w);
+        }
+    }
+
+    /** Fine dots around the crayon core: the grainy texture (re-scattered per frame when jitter is on). */
+    private void crayonGrain(Stroke s, int k, Path out) {
+        out.reset();
+        int n = s.n;
+        float total = s.length();
+        float step = Math.max(1f, s.size * 0.16f);
+        float r = s.size * 0.5f;
+        float dot = Math.max(0.45f, s.size * 0.055f);
+        int seg = 0, j = 0;
+        for (float d = 0; d <= total; d += step, j++) {
+            float px, py;
+            if (n == 1) {
+                px = bx[0];
+                py = by[0];
+            } else {
+                while (seg < n - 2 && s.arc[seg + 1] < d) seg++;
+                float a0 = s.arc[seg], a1 = s.arc[seg + 1];
+                float f = a1 > a0 ? (d - a0) / (a1 - a0) : 0;
+                px = bx[seg] + (bx[seg + 1] - bx[seg]) * f;
+                py = by[seg] + (by[seg + 1] - by[seg]) * f;
+            }
+            for (int m = 0; m < 4; m++) {
+                int h = s.seed * 31 + k * 7919 + j * 4 + m;
+                double ang = hash(h, 1) * Math.PI;
+                float rad = r * (float) Math.sqrt(Math.abs(hash(h, 2)));
+                float dr = dot * (0.5f + Math.abs(hash(h, 3)));
+                out.addCircle(px + (float) Math.cos(ang) * rad, py + (float) Math.sin(ang) * rad, dr, Path.Direction.CW);
             }
         }
     }

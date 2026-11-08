@@ -875,7 +875,8 @@ final class CanvasView extends View {
         live.alpha = bs.alpha;
         live.wobble = bs.wobble;
         live.speed = bs.speed;
-        live.frames = Math.max(1, bs.frames);
+        live.frames = bs.boil ? Math.max(1, bs.frames) : 1;
+        if (!bs.boil) live.wobble = 0;
         live.spacing = bs.spacing;
         live.echo = bs.echo && !live.eraser;
         live.seed = rnd.nextInt(1 << 20);

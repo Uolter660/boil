@@ -14,31 +14,43 @@ import java.util.Arrays;
 /** Brush catalogue: every brush is vector-based and re-rendered every frame, so it can be animated. */
 final class Brush {
     static final int INK = 0, FELT = 1, STICKY = 2, PENCIL = 3, MARKER = 4, NEON = 5,
-            FLOW = 6, SPARKLE = 7, PULSE = 8, WAVE = 9, SPRAY = 10, TRIO = 11, COUNT = 12;
+            FLOW = 6, SPARKLE = 7, PULSE = 8, WAVE = 9, SPRAY = 10, TRIO = 11,
+            PEN = 12, PAINT = 13, SOFT = 14, CALLIG = 15, CRAYON = 16, COUNT = 17;
 
     static final String[] NAME = {"Чернила", "Фломастер", "Липкие чернила", "Карандаш", "Маркер",
-            "Неон", "Поток", "Искры", "Пульс", "Волна", "Спрей", "Трио"};
+            "Неон", "Поток", "Искры", "Пульс", "Волна", "Спрей", "Трио",
+            "Ручка", "Кисть", "Мягкая кисть", "Каллиграфия", "Мелок"};
     static final String[] HINT = {"нажим · кипение", "рваный край", "две живые пряди", "двойной штрих",
             "полупрозрачный", "свечение", "бегущий пунктир", "мерцающие звёзды", "дышащая толщина",
-            "бегущая волна", "живое распыление", "три пряди, как в скетче"};
+            "бегущая волна", "живое распыление", "три пряди, как в скетче",
+            "ровная чистая линия", "нажим и тонкие концы", "аэрограф, мягкий край", "плоское перо под 45°", "зернистая текстура"};
 
-    static final float[] SIZE = {8, 6, 7, 3, 24, 8, 8, 12, 8, 6, 22, 9};
-    static final float[] ALPHA = {1, 1, 1, .9f, .5f, 1, 1, 1, 1, 1, 1, 1};
-    static final float[] WOBBLE = {2.5f, 2.5f, 3.5f, 1.8f, 2f, 2f, 1.5f, 1.5f, 2f, 2.5f, 1f, 3.5f};
+    static final float[] SIZE = {8, 6, 7, 3, 24, 8, 8, 12, 8, 6, 22, 9, 5, 12, 40, 14, 12};
+    static final float[] ALPHA = {1, 1, 1, .9f, .5f, 1, 1, 1, 1, 1, 1, 1, 1, 1, .6f, 1, .9f};
+    static final float[] WOBBLE = {2.5f, 2.5f, 3.5f, 1.8f, 2f, 2f, 1.5f, 1.5f, 2f, 2.5f, 1f, 3.5f, 2f, 2f, 2f, 2f, 2f};
     /** Boil changes per second; the UI shows this divided by 4 (so 10.8 reads as 2.7, like the reference). */
-    static final float[] SPEED = {8, 10.8f, 10.8f, 10, 6, 8, 6, 4, 3, 3, 10, 10.8f};
-    static final int[] FRAMES = {3, 4, 4, 4, 3, 3, 3, 3, 3, 3, 4, 4};
-    static final float[] STAB = {.25f, .16f, .16f, .15f, .3f, .3f, .3f, .2f, .3f, .3f, .1f, .16f};
-    static final float[] SPACING = {6, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6, 3};
+    static final float[] SPEED = {8, 10.8f, 10.8f, 10, 6, 8, 6, 4, 3, 3, 10, 10.8f, 8, 8, 8, 8, 8};
+    static final int[] FRAMES = {3, 4, 4, 4, 3, 3, 3, 3, 3, 3, 4, 4, 3, 3, 3, 3, 3};
+    static final float[] STAB = {.25f, .16f, .16f, .15f, .3f, .3f, .3f, .2f, .3f, .3f, .1f, .16f, .3f, .3f, .2f, .35f, .15f};
+    static final float[] SPACING = {6, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6, 3, 6, 6, 6, 6, 6};
+    /** Whether line jitter is on by default; the classic brushes start still. */
+    static final boolean[] BOIL = {true, true, true, true, true, true, true, true, true, true, true, true,
+            false, false, false, false, false};
 
     /** Brush-panel categories, shown as a rail of icons like in the reference app. */
-    static final String[] CAT_NAME = {"Каракули", "Перо", "Эффекты"};
-    static final String[] CAT_ICON = {"brush", "edit", "effect"};
-    static final int[][] CAT = {{TRIO, STICKY, FELT}, {INK, PENCIL, MARKER}, {NEON, FLOW, SPARKLE, PULSE, WAVE, SPRAY}};
+    static final String[] CAT_NAME = {"Каракули", "Обычные", "Перо", "Эффекты"};
+    static final String[] CAT_ICON = {"brush", "tip", "edit", "effect"};
+    static final int[][] CAT = {{TRIO, STICKY, FELT}, {PEN, PAINT, SOFT, CALLIG, CRAYON}, {INK, PENCIL, MARKER},
+            {NEON, FLOW, SPARKLE, PULSE, WAVE, SPRAY}};
 
     /** Doodle brushes are drawn as independent jittering strands with tapered ends. */
     static boolean doodle(int b) {
         return b == FELT || b == STICKY || b == TRIO;
+    }
+
+    /** Brushes drawn as one variable-width filled outline. */
+    static boolean ribbon(int b) {
+        return b == INK || b == PEN || b == PAINT || b == CALLIG;
     }
 
     static int category(int b) {
@@ -51,6 +63,8 @@ final class BrushSettings {
     float size, alpha, wobble, speed, stabilize, spacing = 3;
     int frames;
     boolean echo;
+    /** Line jitter on or off for this brush (the wobble amount is kept for when it is turned back on). */
+    boolean boil = true;
 
     static BrushSettings defaults(int b) {
         BrushSettings s = new BrushSettings();
@@ -61,6 +75,7 @@ final class BrushSettings {
         s.frames = Brush.FRAMES[b];
         s.stabilize = Brush.STAB[b];
         s.spacing = Brush.SPACING[b];
+        s.boil = Brush.BOIL[b];
         return s;
     }
 
@@ -72,17 +87,18 @@ final class BrushSettings {
         s.speed = 8;
         s.frames = 3;
         s.stabilize = .2f;
+        s.boil = false;
         return s;
     }
 
     String encode() {
-        return size + "," + alpha + "," + wobble + "," + speed + "," + frames + "," + stabilize + "," + spacing + "," + echo;
+        return size + "," + alpha + "," + wobble + "," + speed + "," + frames + "," + stabilize + "," + spacing + "," + echo + "," + boil;
     }
 
     boolean decode(String s) {
         if (s == null) return false;
         String[] v = s.split(",");
-        if (v.length != 6 && v.length != 8) return false;
+        if (v.length != 6 && v.length != 8 && v.length != 9) return false;
         try {
             size = Float.parseFloat(v[0]);
             alpha = Float.parseFloat(v[1]);
@@ -90,10 +106,11 @@ final class BrushSettings {
             speed = Float.parseFloat(v[3]);
             frames = Integer.parseInt(v[4]);
             stabilize = Float.parseFloat(v[5]);
-            if (v.length == 8) {
+            if (v.length >= 8) {
                 spacing = Float.parseFloat(v[6]);
                 echo = Boolean.parseBoolean(v[7]);
             }
+            if (v.length >= 9) boil = Boolean.parseBoolean(v[8]);
             return true;
         } catch (NumberFormatException e) {
             return false;

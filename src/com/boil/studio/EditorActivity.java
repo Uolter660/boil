@@ -1049,6 +1049,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
 
         final ArrayList<Ui.Slider> sliders = new ArrayList<>();
         final Ui.Toggle echo = new Ui.Toggle(this, cv.settings().echo);
+        final Ui.Toggle jitter = new Ui.Toggle(this, cv.settings().boil);
         final Runnable bind = new Runnable() {
             @Override
             public void run() {
@@ -1063,6 +1064,14 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                 sliders.get(6).set(bs.alpha, Math.round(bs.alpha * 100) + "%");
                 echo.on = bs.echo;
                 echo.invalidate();
+                jitter.on = bs.boil;
+                jitter.invalidate();
+                // jitter-only settings fade out while jitter is off
+                float dim = bs.boil ? 1f : 0.35f;
+                sliders.get(0).setAlpha(dim);
+                sliders.get(1).setAlpha(dim);
+                sliders.get(2).setAlpha(dim);
+                sliders.get(4).setAlpha(dim);
                 syncRail();
             }
         };
@@ -1184,6 +1193,23 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                 bind.run();
             }
         }));
+        LinearLayout jr = Ui.row(this);
+        jr.setPadding(0, dp(6), 0, dp(6));
+        LinearLayout jn = Ui.col(this);
+        jn.addView(Ui.text(this, "Дрожание линии", 14, Ui.TEXT, true));
+        TextView jh = Ui.text(this, "выключите — линия станет обычной и неподвижной", 11, Ui.DIM, false);
+        jh.setPadding(0, dp(3), 0, 0);
+        jn.addView(jh);
+        jr.addView(jn, Ui.lpw(1));
+        jitter.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.settings().boil = !cv.settings().boil;
+                bind.run();
+            }
+        });
+        jr.addView(jitter);
+        c.addView(jr, new LinearLayout.LayoutParams(-1, -2));
         for (Ui.Slider s : sliders) c.addView(s, new LinearLayout.LayoutParams(-1, -2));
 
         if (!er) {
@@ -1219,6 +1245,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                 bs.stabilize = d.stabilize;
                 bs.spacing = d.spacing;
                 bs.echo = d.echo;
+                bs.boil = d.boil;
                 bind.run();
             }
         });

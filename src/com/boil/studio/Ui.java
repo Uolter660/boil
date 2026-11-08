@@ -216,6 +216,7 @@ final class Ui {
             case "line": return "M5 19L19 5D5 19 2D19 5 2";
             case "fliph": return "M12 3V21M9 7L3 17H9ZM15 7L21 17H15Z";
             case "flipv": return "M3 12H21M7 9L17 3V9ZM7 15L17 21V15Z";
+            case "tip": return "O12 12 7D12 12 3";
             case "boil": return "M3 12C5 8 7 8 9 12C11 16 13 16 15 12C17 8 19 8 21 12";
             case "rotl": return "M8 4H4V8M4 8C6 4.5 9 3.5 12 3.5C16.7 3.5 20.5 7.3 20.5 12C20.5 16.7 16.7 20.5 12 20.5C8.5 20.5 5.5 18.5 4.3 15.5";
             case "rotr": return "M16 4H20V8M20 8C18 4.5 15 3.5 12 3.5C7.3 3.5 3.5 7.3 3.5 12C3.5 16.7 7.3 20.5 12 20.5C15.5 20.5 18.5 18.5 19.7 15.5";
@@ -671,7 +672,7 @@ final class Ui {
             if (w <= 0) return;
             boolean flat = Brush.doodle(brush);
             float size = flat ? Math.min(Math.max(s.size, 4) * 1.6f, h * 0.42f) : Math.min(s.size, h * 0.32f);
-            String k = w + "|" + size + "|" + s.wobble + "|" + s.speed + "|" + s.frames + "|" + s.alpha + "|" + s.spacing + "|" + s.echo;
+            String k = w + "|" + size + "|" + s.wobble + "|" + s.speed + "|" + s.frames + "|" + s.alpha + "|" + s.spacing + "|" + s.echo + "|" + s.boil;
             if (stroke == null || !k.equals(key)) {
                 key = k;
                 stroke = new Stroke();
@@ -679,9 +680,9 @@ final class Ui {
                 stroke.color = 0xFFFFFFFF;
                 stroke.size = size;
                 stroke.alpha = Math.max(0.35f, s.alpha);
-                stroke.wobble = s.wobble;
+                stroke.wobble = s.boil ? s.wobble : 0;
                 stroke.speed = s.speed;
-                stroke.frames = s.frames;
+                stroke.frames = s.boil ? s.frames : 1;
                 stroke.seed = brush * 977 + 13;
                 stroke.spacing = s.spacing;
                 stroke.echo = s.echo;
