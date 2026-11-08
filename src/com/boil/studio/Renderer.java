@@ -25,6 +25,8 @@ final class Renderer {
         Stroke live;
         Set<Item> sel;
         float dx, dy;
+        /** Live rotate/scale preview of the selection around (cx, cy). */
+        float rot, sc = 1, cx, cy;
         boolean onion, freezeActive;
     }
 
@@ -104,6 +106,10 @@ final class Renderer {
             if (sel != null && !sel.isEmpty()) {
                 c.save();
                 c.translate(ex.dx, ex.dy);
+                if (ex.rot != 0 || ex.sc != 1) {
+                    c.rotate(ex.rot, ex.cx, ex.cy);
+                    c.scale(ex.sc, ex.sc, ex.cx, ex.cy);
+                }
                 drawCel(c, cel, t, sel, true);
                 c.restore();
             }

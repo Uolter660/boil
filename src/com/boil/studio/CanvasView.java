@@ -58,7 +58,14 @@ final class CanvasView extends View {
     private final float[] mv = new float[9];
 
     private static final int M_NONE = 0, M_DRAW = 1, M_GESTURE = 2, M_GEST_END = 3, M_LASSO = 4,
-            M_MOVE = 5, M_PICK = 6, M_FILL = 7, M_IGNORE = 8, M_PIVOT = 9;
+            M_MOVE = 5, M_PICK = 6, M_FILL = 7, M_IGNORE = 8, M_PIVOT = 9, M_ROTATE = 10, M_SCALE = 11, M_SELGEST = 12;
+    /** Two-finger selection transform: start centre, distance, angle and finger ids. */
+    private float sgCx, sgCy, sgD0, sgA0;
+    private int sgIdA, sgIdB;
+    /** Live rotate/scale of the selection while a handle is dragged. */
+    private float selRot, selScale = 1, rotCx, rotCy, rotA0, scaleD0;
+    private final Matrix selM = new Matrix();
+    private final float[] hp = new float[4];
     /** Next touch places the active layer's base point. */
     boolean pivotMode;
     private int mode;
@@ -213,6 +220,10 @@ final class CanvasView extends View {
         extra.live = live;
         extra.sel = sel.isEmpty() ? null : sel;
         extra.dx = selDx;
+        extra.rot = selRot;
+        extra.sc = selScale;
+        extra.cx = rotCx;
+        extra.cy = rotCy;
         extra.dy = selDy;
         extra.onion = onion && !playing;
         extra.freezeActive = live != null || !sel.isEmpty() || mode == M_LASSO;
@@ -232,11 +243,13 @@ final class CanvasView extends View {
         }
         if (!sel.isEmpty()) {
             RectF r = selBounds(0);
-            r.offset(selDx, selDy);
-            view.mapRect(r);
             tmpPath.reset();
             tmpPath.addRect(r, Path.Direction.CW);
+            selMatrix();
+            tmpPath.transform(selM);
+            tmpPath.transform(view);
             ants(c, tmpPath, t, dash);
+            if (mode != M_MOVE && mode != M_SELGEST) drawHandles(c);
         }
         if (mode == M_PICK) {
             float x = pickSX, y = pickSY - Ui.dp(80);
@@ -272,6 +285,76 @@ final class CanvasView extends View {
             c.drawCircle(cx, cy, r + Ui.dp(2), ui);
             ui.setColor(0xFF000000);
             c.drawCircle(cx, cy, r + Ui.dp(3.5f), ui);
+        }
+    }
+
+    /** Doc-space transform of the selection preview: scale and turn around the pivot, then move. */
+    private void selMatrix() {
+        selM.reset();
+        selM.postScale(selScale, selScale, rotCx, rotCy);
+        selM.postRotate(selRot, rotCx, rotCy);
+        selM.postTranslate(selDx, selDy);
+    }
+
+    /** Screen positions of the rotate handle (hp[0..1]) and the scale handle (hp[2..3]). */
+    private void handles() {
+        RectF b = selBounds(0);
+        if (mode != M_ROTATE && mode != M_SCALE && mode != M_SELGEST) {
+            rotCx = pivotX(b);
+            rotCy = pivotY(b);
+        }
+        selMatrix();
+        hp[0] = b.centerX();
+        hp[1] = b.top - Ui.dp(40) / scale();
+        hp[2] = b.right;
+        hp[3] = b.bottom;
+        selM.mapPoints(hp);
+        view.mapPoints(hp);
+    }
+
+    private void drawHandles(Canvas c) {
+        handles();
+        RectF b = selBounds(0);
+        float[] top = {b.centerX(), b.top};
+        selM.mapPoints(top);
+        view.mapPoints(top);
+        ui.setPathEffect(null);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(Ui.dp(1.5f));
+        ui.setColor(0xFFFFFFFF);
+        c.drawLine(top[0], top[1], hp[0], hp[1], ui);
+        // rotate handle: filled disc with a small turning arc
+        float r = Ui.dp(16);
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0xFFFFFFFF);
+        c.drawCircle(hp[0], hp[1], r, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(Ui.dp(1));
+        ui.setColor(0xFF000000);
+        c.drawCircle(hp[0], hp[1], r, ui);
+        ui.setStrokeWidth(Ui.dp(1.8f));
+        RectF arc = new RectF(hp[0] - Ui.dp(7), hp[1] - Ui.dp(7), hp[0] + Ui.dp(7), hp[1] + Ui.dp(7));
+        c.drawArc(arc, -60, 270, false, ui);
+        // scale handle: square in the corner
+        float q = Ui.dp(9);
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0xFFFFFFFF);
+        c.drawRect(hp[2] - q, hp[3] - q, hp[2] + q, hp[3] + q, ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(Ui.dp(1));
+        ui.setColor(0xFF000000);
+        c.drawRect(hp[2] - q, hp[3] - q, hp[2] + q, hp[3] + q, ui);
+        if (mode == M_ROTATE || mode == M_SCALE) {
+            String label = mode == M_ROTATE ? Math.round(selRot) + "°" : Math.round(selScale * 100) + "%";
+            ui.setStyle(Paint.Style.FILL);
+            ui.setTextSize(Ui.dp(14));
+            ui.setTextAlign(Paint.Align.CENTER);
+            float lx = mode == M_ROTATE ? hp[0] : hp[2], ly = (mode == M_ROTATE ? hp[1] : hp[3]) - Ui.dp(24);
+            float tw = ui.measureText(label) / 2 + Ui.dp(8);
+            ui.setColor(0xE6161616);
+            c.drawRoundRect(new RectF(lx - tw, ly - Ui.dp(15), lx + tw, ly + Ui.dp(7)), Ui.dp(8), Ui.dp(8), ui);
+            ui.setColor(0xFFFFFFFF);
+            c.drawText(label, lx, ly, ui);
         }
     }
 
@@ -340,7 +423,11 @@ final class CanvasView extends View {
                         break; // a stray palm during a long stroke: keep drawing with the first finger
                     }
                 }
-                if (mode == M_IGNORE) break;
+                if (mode == M_IGNORE || mode == M_SELGEST) break;
+                if (tool == LASSO && !sel.isEmpty() && (mode == M_MOVE || mode == M_ROTATE || mode == M_SCALE)) {
+                    beginSelGesture(e);
+                    break;
+                }
                 if (mode == M_LASSO) {
                     lassoActive = false;
                     lasso.reset();
@@ -349,15 +436,23 @@ final class CanvasView extends View {
                     selDx = 0;
                     selDy = 0;
                 }
+                if (mode == M_ROTATE || mode == M_SCALE) {
+                    selRot = 0;
+                    selScale = 1;
+                }
                 if (mode == M_PICK) endPick(false);
                 beginGesture(e, -1);
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (mode == M_GESTURE) updateGesture(e);
+                else if (mode == M_SELGEST) updateSelGesture(e);
                 else toolMove(e);
                 break;
             case MotionEvent.ACTION_POINTER_UP:
-                if (mode == M_GESTURE || mode == M_GEST_END) {
+                if (mode == M_SELGEST) {
+                    int id = e.getPointerId(e.getActionIndex());
+                    if (id == sgIdA || id == sgIdB) commitSelGesture();
+                } else if (mode == M_GESTURE || mode == M_GEST_END) {
                     beginGesture(e, e.getActionIndex());
                 } else if (mode == M_DRAW && e.getActionIndex() == 0) {
                     commitStroke(e);
@@ -365,7 +460,9 @@ final class CanvasView extends View {
                 }
                 break;
             case MotionEvent.ACTION_UP:
-                if (mode == M_GESTURE || mode == M_GEST_END) {
+                if (mode == M_SELGEST) {
+                    commitSelGesture();
+                } else if (mode == M_GESTURE || mode == M_GEST_END) {
                     if (!gMoved && e.getEventTime() - downTime < 350) {
                         if (maxPtr == 2) undo();
                         else if (maxPtr == 3) redo();
@@ -381,6 +478,8 @@ final class CanvasView extends View {
                 live = null;
                 lassoActive = false;
                 selDx = selDy = 0;
+                selRot = 0;
+                selScale = 1;
                 if (mode == M_PICK) endPick(false);
                 mode = M_NONE;
                 break;
@@ -453,6 +552,21 @@ final class CanvasView extends View {
                 if (host != null) host.onDrawing(true);
                 break;
             case LASSO:
+                if (!sel.isEmpty()) {
+                    handles();
+                    if (Math.hypot(downX - hp[0], downY - hp[1]) < Ui.dp(30)) {
+                        mode = M_ROTATE;
+                        rotA0 = (float) Math.atan2(y - rotCy, x - rotCx);
+                        selRot = 0;
+                        break;
+                    }
+                    if (Math.hypot(downX - hp[2], downY - hp[3]) < Ui.dp(26)) {
+                        mode = M_SCALE;
+                        scaleD0 = Math.max(1e-3f, (float) Math.hypot(x - rotCx, y - rotCy));
+                        selScale = 1;
+                        break;
+                    }
+                }
                 if (!sel.isEmpty() && selBounds(12 / scale()).contains(x, y)) {
                     mode = M_MOVE;
                     mx0 = x;
@@ -519,6 +633,22 @@ final class CanvasView extends View {
                 selDx = pt[0] - mx0;
                 selDy = pt[1] - my0;
                 break;
+            case M_ROTATE: {
+                toDoc(e.getX(), e.getY());
+                float a = (float) Math.toDegrees(Math.atan2(pt[1] - rotCy, pt[0] - rotCx) - rotA0);
+                while (a > 180) a -= 360;
+                while (a <= -180) a += 360;
+                float snap = Math.round(a / 45f) * 45f; // gentle magnet to 0°, 45°, 90°…
+                selRot = Math.abs(a - snap) < 2.5f ? snap : a;
+                break;
+            }
+            case M_SCALE: {
+                toDoc(e.getX(), e.getY());
+                float sc = (float) Math.hypot(pt[0] - rotCx, pt[1] - rotCy) / scaleD0;
+                sc = Math.max(0.05f, Math.min(20f, sc));
+                selScale = Math.abs(sc - 1) < 0.03f ? 1 : sc;
+                break;
+            }
             case M_PICK:
                 pick(e.getX(), e.getY());
                 break;
@@ -544,6 +674,18 @@ final class CanvasView extends View {
             case M_MOVE:
                 commitMove();
                 break;
+            case M_ROTATE: {
+                float a = selRot;
+                selRot = 0;
+                if (Math.abs(a) > 0.05f) rotateSelection(a);
+                break;
+            }
+            case M_SCALE: {
+                float sc = selScale;
+                selScale = 1;
+                if (Math.abs(sc - 1) > 0.001f) scaleSelection(sc);
+                break;
+            }
             case M_PICK:
                 endPick(true);
                 break;
@@ -686,6 +828,8 @@ final class CanvasView extends View {
         boolean had = !sel.isEmpty();
         sel.clear();
         selDx = selDy = 0;
+        selRot = 0;
+        selScale = 1;
         lassoActive = false;
         if (had && host != null) host.onSelection(false);
     }
@@ -737,6 +881,78 @@ final class CanvasView extends View {
         cel.touch();
         sel.clear();
         sel.addAll(turned);
+        changed();
+    }
+
+    private void beginSelGesture(MotionEvent e) {
+        int a = 0, b = 1;
+        sgIdA = e.getPointerId(a);
+        sgIdB = e.getPointerId(b);
+        selDx = selDy = 0;
+        selRot = 0;
+        selScale = 1;
+        toDoc(e.getX(a), e.getY(a));
+        float ax = pt[0], ay = pt[1];
+        toDoc(e.getX(b), e.getY(b));
+        float bx = pt[0], by = pt[1];
+        sgCx = (ax + bx) / 2;
+        sgCy = (ay + by) / 2;
+        sgD0 = Math.max(1e-3f, (float) Math.hypot(bx - ax, by - ay));
+        sgA0 = (float) Math.atan2(by - ay, bx - ax);
+        rotCx = sgCx;
+        rotCy = sgCy;
+        gMoved = true; // never treat this as the two-finger undo tap
+        mode = M_SELGEST;
+    }
+
+    private void updateSelGesture(MotionEvent e) {
+        int a = e.findPointerIndex(sgIdA), b = e.findPointerIndex(sgIdB);
+        if (a < 0 || b < 0) return;
+        toDoc(e.getX(a), e.getY(a));
+        float ax = pt[0], ay = pt[1];
+        toDoc(e.getX(b), e.getY(b));
+        float bx = pt[0], by = pt[1];
+        float deg = (float) Math.toDegrees(Math.atan2(by - ay, bx - ax) - sgA0);
+        while (deg > 180) deg -= 360;
+        while (deg <= -180) deg += 360;
+        float snap = Math.round(deg / 45f) * 45f;
+        selRot = Math.abs(deg - snap) < 2.5f ? snap : deg;
+        float sc = Math.max(0.05f, Math.min(20f, (float) Math.hypot(bx - ax, by - ay) / sgD0));
+        selScale = Math.abs(sc - 1) < 0.03f ? 1 : sc;
+        selDx = (ax + bx) / 2 - sgCx;
+        selDy = (ay + by) / 2 - sgCy;
+    }
+
+    private void commitSelGesture() {
+        float rot = selRot, sc = selScale, dx = selDx, dy = selDy;
+        selRot = 0;
+        selScale = 1;
+        selDx = selDy = 0;
+        mode = M_GEST_END;
+        if (Math.abs(rot) > 0.05f || Math.abs(sc - 1) > 0.001f || Math.abs(dx) + Math.abs(dy) > 0.5f) {
+            transformSelection(sc, rot, sgCx, sgCy, dx, dy);
+        }
+    }
+
+    /** Scales and turns the selection around (cx, cy), then moves it, as one undo step. */
+    private void transformSelection(float sc, float rot, float cx, float cy, float dx, float dy) {
+        if (sel.isEmpty()) return;
+        history.push(this);
+        Cel cel = activeCel();
+        HashSet<Item> out = new HashSet<>();
+        for (int i = 0; i < cel.items.size(); i++) {
+            Item it = cel.items.get(i);
+            if (!sel.contains(it)) continue;
+            Item m = it;
+            if (sc != 1) m = m.scaled(sc, cx, cy);
+            if (rot != 0) m = m.rotated(rot, cx, cy);
+            if (dx != 0 || dy != 0) m = m.moved(dx, dy);
+            cel.items.set(i, m);
+            out.add(m);
+        }
+        cel.touch();
+        sel.clear();
+        sel.addAll(out);
         changed();
     }
 

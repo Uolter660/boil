@@ -187,13 +187,13 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         rest.addView(icon("rotl", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                cv.rotateSelection(-15);
+                cv.rotateSelection(-1);
             }
         }));
         rest.addView(icon("rotr", new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                cv.rotateSelection(15);
+                cv.rotateSelection(1);
             }
         }));
         rest.addView(icon("copy", new View.OnClickListener() {
@@ -869,6 +869,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     @Override
     public void onSelection(boolean has) {
         updateSelBar();
+        if (has) showHint("Крутите двумя пальцами или за кружок над рамкой", true);
     }
 
     private void updateSelBar() {
