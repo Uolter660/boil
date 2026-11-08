@@ -32,6 +32,8 @@ final class Renderer {
     boolean useCache = true;
     /** Whether animated effects apply during the current render (off for fills and thumbnails). */
     private boolean fxOn = true;
+    /** Line jitter playback; when off, every stroke and fill stays on its first boil frame. */
+    boolean boilOn = true;
     private final Path scratch = new Path();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint layerPaint = new Paint();
@@ -166,7 +168,14 @@ final class Renderer {
         paint.setFilterBitmap(true);
         paint.setAntiAlias(true);
         picRect.set(pc.left, pc.top, pc.left + pc.w, pc.top + pc.h);
-        c.drawBitmap(pc.bmp, null, picRect, paint);
+        if (pc.angle != 0) {
+            c.save();
+            c.rotate(pc.angle, picRect.centerX(), picRect.centerY());
+            c.drawBitmap(pc.bmp, null, picRect, paint);
+            c.restore();
+        } else {
+            c.drawBitmap(pc.bmp, null, picRect, paint);
+        }
     }
 
     private void drawGroup(Canvas c, Group g, float t) {
@@ -187,7 +196,12 @@ final class Renderer {
         m.reset();
         float f = 0.25f + L.fxSpeed * 2.75f;
         float A = L.fxAmount, R = L.fxRotate;
-        float cx = b.centerX(), cy = b.centerY();
+        float cx = b.centerX(), cy = b.centerY(), base = b.bottom;
+        if (L.hasPivot) {
+            cx = L.pivotX;
+            cy = L.pivotY;
+            base = L.pivotY;
+        }
         float H = Math.max(40, b.height()), W = Math.max(40, b.width());
         double ph = 2 * Math.PI * f * t;
         switch (L.effect) {
@@ -195,13 +209,13 @@ final class Renderer {
                 float s = (float) Math.abs(Math.sin(ph / 2));
                 float g = (float) Math.pow(1 - s, 6);
                 float sq = g * A * 0.22f - s * A * 0.06f;
-                m.postScale(1 + sq, 1 - sq, cx, b.bottom);
-                m.postRotate((float) (R * 10 * Math.sin(ph)) * s, cx, b.bottom);
+                m.postScale(1 + sq, 1 - sq, cx, base);
+                m.postRotate((float) (R * 10 * Math.sin(ph)) * s, cx, base);
                 m.postTranslate(0, -s * A * H * 0.3f);
                 break;
             }
             case Layer.FX_SHAKE:
-                m.postRotate((float) ((R * 22 + 3) * Math.sin(ph)), cx, b.bottom);
+                m.postRotate((float) ((R * 22 + 3) * Math.sin(ph)), cx, base);
                 m.postTranslate((float) (A * W * 0.05f * Math.sin(ph * 2.3)), (float) (A * H * 0.015f * Math.sin(ph * 3.1)));
                 break;
             case Layer.FX_FLOAT:
@@ -227,7 +241,7 @@ final class Renderer {
     // ---------- items ----------
 
     void drawFill(Canvas c, Fill f, float t) {
-        int k = boilFrame(t, f.speed, f.frames);
+        int k = boilOn ? boilFrame(t, f.speed, f.frames) : 0;
         float ox = 0, oy = 0;
         if (f.wobble > 0) {
             ox = f.wobble * .5f * hash(f.seed, k * 2);
@@ -236,12 +250,19 @@ final class Renderer {
         paint.reset();
         paint.setFilterBitmap(true);
         paint.setColor(f.color);
-        c.drawBitmap(f.mask, f.left + ox, f.top + oy, paint);
+        if (f.angle != 0) {
+            c.save();
+            c.rotate(f.angle, f.left + f.w / 2f, f.top + f.h / 2f);
+            c.drawBitmap(f.mask, f.left + ox, f.top + oy, paint);
+            c.restore();
+        } else {
+            c.drawBitmap(f.mask, f.left + ox, f.top + oy, paint);
+        }
     }
 
     void drawStroke(Canvas c, Stroke s, float t) {
         if (s.n == 0) return;
-        int k = boilFrame(t, s.speed, s.frames);
+        int k = boilOn ? boilFrame(t, s.speed, s.frames) : 0;
         Paint p = paint;
         p.reset();
         p.setAntiAlias(true);
@@ -254,7 +275,7 @@ final class Renderer {
         }
         p.setAlpha(a);
         int style = s.eraser ? Brush.MARKER : s.brush;
-        if (s.echo && s.frames > 1 && (Brush.doodle(style) || style == Brush.INK)) {
+        if (boilOn && s.echo && s.frames > 1 && (Brush.doodle(style) || style == Brush.INK)) {
             // frame echo: the previous boil frame lingers faintly under the current one
             p.setStyle(Paint.Style.FILL);
             p.setAlpha(Math.round(a * 0.3f));

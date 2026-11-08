@@ -48,7 +48,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
 
     private FrameLayout root, overlay;
     private CanvasView cv;
-    private Ui.Icon brushI, eraserI, lassoI, pickerI, fillI, fxI, layersI, undoI, redoI, playI, onionI;
+    private Ui.Icon brushI, eraserI, lassoI, pickerI, fillI, fxI, layersI, undoI, redoI, playI, onionI, boilI;
     private Ui.Swatch colorS;
     private Ui.VSlider sizeS, alphaS;
     private LinearLayout frameStrip, selBar;
@@ -298,6 +298,13 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             }
         });
         tl.addView(onionI);
+        boilI = icon("boil", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleBoil();
+            }
+        });
+        tl.addView(boilI);
         fpsT = Ui.text(this, "", 12, Ui.TEXT, true);
         fpsT.setGravity(Gravity.CENTER);
         fpsT.setPadding(dp(6), dp(8), dp(4), dp(8));
@@ -331,6 +338,12 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-2, -2);
         ap.rightMargin = dp(4);
         selBar.addView(all, ap);
+        selBar.addView(icon("pivot", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startPivot();
+            }
+        }));
         selAll = all;
         LinearLayout rest = Ui.row(this);
         rest.addView(icon("minus", new View.OnClickListener() {
@@ -343,6 +356,18 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             @Override
             public void onClick(View v) {
                 cv.scaleSelection(1.1f);
+            }
+        }));
+        rest.addView(icon("rotl", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.rotateSelection(-15);
+            }
+        }));
+        rest.addView(icon("rotr", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.rotateSelection(15);
             }
         }));
         rest.addView(icon("copy", new View.OnClickListener() {
@@ -370,9 +395,16 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         selBar.addView(rest);
         selRest = rest;
         selBar.setVisibility(View.GONE);
+        // the bar can be wider than a phone screen, so it scrolls sideways
+        HorizontalScrollView selScroll = new HorizontalScrollView(this);
+        selScroll.setHorizontalScrollBarEnabled(false);
+        selScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        selScroll.addView(selBar);
         FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         sl.bottomMargin = dp(66);
-        root.addView(selBar, sl);
+        sl.leftMargin = dp(10);
+        sl.rightMargin = dp(10);
+        root.addView(selScroll, sl);
 
         // transient hint
         hint = Ui.text(this, "", 13, Ui.TEXT, true);
@@ -452,6 +484,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         syncUndo();
         rebuildTimeline();
         onionI.setActive(cv.onion);
+        boilI.setActive(cv.doc.boil);
         colorS.setColor(cv.color);
     }
 
@@ -711,7 +744,22 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         card.animate().alpha(1).translationY(0).setDuration(150).start();
     }
 
+    private void toggleBoil() {
+        cv.doc.boil = !cv.doc.boil;
+        boilI.setActive(cv.doc.boil);
+        dirty = true;
+        showHint(cv.doc.boil ? "Дрожание линий включено" : "Дрожание линий выключено", true);
+    }
+
+    /** Next touch on the canvas sets the active layer's base point. */
+    private void startPivot() {
+        closePanel();
+        cv.pivotMode = true;
+        showHint("Коснитесь холста, чтобы поставить точку основы", true);
+    }
+
     private void closePanel() {
+        cv.showPivot = false;
         panel = null;
         panelRefresh = null;
         overlay.removeAllViews();
@@ -1298,6 +1346,39 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         am.set(L.fxAmount, Math.round(L.fxAmount * 100) + "%");
         ro.set(L.fxRotate, Math.round(L.fxRotate * 100) + "%");
 
+        cv.showPivot = true;
+        LinearLayout pr = Ui.row(this);
+        pr.setPadding(0, dp(12), 0, dp(4));
+        LinearLayout pn = Ui.col(this);
+        pn.addView(Ui.text(this, "Точка основы", 14, Ui.TEXT, false));
+        TextView ps = Ui.text(this, L.hasPivot ? "центр анимации задан вручную" : "авто: центр рисунка", 11, Ui.DIM, false);
+        ps.setPadding(0, dp(3), 0, 0);
+        pn.addView(ps);
+        pr.addView(pn, Ui.lpw(1));
+        TextView setP = Ui.button(this, "Задать", false);
+        setP.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startPivot();
+            }
+        });
+        pr.addView(setP);
+        if (L.hasPivot) {
+            TextView autoP = Ui.button(this, "Авто", false);
+            autoP.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    cv.clearPivot();
+                    togglePanel("fx", Gravity.TOP | Gravity.RIGHT);
+                    togglePanel("fx", Gravity.TOP | Gravity.RIGHT);
+                }
+            });
+            LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-2, -2);
+            al.leftMargin = dp(6);
+            pr.addView(autoP, al);
+        }
+        c.addView(pr, new LinearLayout.LayoutParams(-1, -2));
+
         TextView rm = Ui.text(this, "Убрать эффект", 14, Ui.TEXT, true);
         rm.setGravity(Gravity.CENTER);
         rm.setPadding(0, dp(12), 0, dp(4));
@@ -1387,6 +1468,12 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             }
         });
         c.addView(Ui.divider(this, false));
+        menuRow(c, "boil", d.boil ? "Выключить дрожание линий" : "Включить дрожание линий", new Runnable() {
+            @Override
+            public void run() {
+                toggleBoil();
+            }
+        });
         menuRow(c, "image", "Вставить картинку в кадр", new Runnable() {
             @Override
             public void run() {
@@ -1579,6 +1666,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                     Bitmap bmp = Bitmap.createBitmap(d.w, d.h, Bitmap.Config.ARGB_8888);
                     Renderer r = new Renderer();
                     r.useCache = false;
+                    r.boilOn = d.boil;
                     r.render(new Canvas(bmp), d, frame, t, true, true, null, null);
                     ByteArrayOutputStream bos = new ByteArrayOutputStream();
                     bmp.compress(Bitmap.CompressFormat.PNG, 100, bos);
@@ -1617,6 +1705,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                     int[] px = new int[gw * gh];
                     Renderer r = new Renderer();
                     r.useCache = false;
+                    r.boilOn = d.boil;
                     GifWriter.Palette pal = new GifWriter.Palette();
                     int step = Math.max(1, n / 12);
                     for (int i = 0; i < n; i += step) {
@@ -1680,6 +1769,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                     int[] px = new int[vw * vh];
                     Renderer r = new Renderer();
                     r.useCache = false;
+                    r.boilOn = d.boil;
                     mw = new Mp4Writer(tmp, vw, vh, fps);
                     for (int i = 0; i < n; i++) {
                         float t = i / (float) fps;

@@ -109,6 +109,27 @@ abstract class Item {
 
     /** Copy scaled by s around (cx, cy). */
     abstract Item scaled(float s, float cx, float cy);
+
+    /** Copy rotated by deg degrees around (cx, cy). */
+    abstract Item rotated(float deg, float cx, float cy);
+
+    /** Bounds of a w×h box at (left, top) turned by deg around its own centre. */
+    static void boxBounds(RectF out, float left, float top, float w, float h, float deg) {
+        float cx = left + w / 2, cy = top + h / 2;
+        double r = Math.toRadians(deg);
+        float c = (float) Math.abs(Math.cos(r)), s = (float) Math.abs(Math.sin(r));
+        float hw = (w * c + h * s) / 2, hh = (w * s + h * c) / 2;
+        out.set(cx - hw, cy - hh, cx + hw, cy + hh);
+    }
+
+    /** (x, y) turned by deg around (cx, cy), written into out. */
+    static void turn(float[] out, float x, float y, float deg, float cx, float cy) {
+        double r = Math.toRadians(deg);
+        float c = (float) Math.cos(r), s = (float) Math.sin(r);
+        float dx = x - cx, dy = y - cy;
+        out[0] = cx + dx * c - dy * s;
+        out[1] = cy + dx * s + dy * c;
+    }
 }
 
 /** A bitmap image placed into a cel (photos imported from the device). */
@@ -117,25 +138,39 @@ final class Picture extends Item {
     /** Encoded image bytes, kept for saving without re-encoding. */
     final byte[] encoded;
     final float left, top, w, h;
+    /** Rotation in degrees around the picture's own centre. */
+    final float angle;
 
     Picture(Bitmap bmp, byte[] encoded, float left, float top, float w, float h) {
+        this(bmp, encoded, left, top, w, h, 0);
+    }
+
+    Picture(Bitmap bmp, byte[] encoded, float left, float top, float w, float h, float angle) {
         this.bmp = bmp;
         this.encoded = encoded;
         this.left = left;
         this.top = top;
         this.w = w;
         this.h = h;
-        bounds.set(left, top, left + w, top + h);
+        this.angle = angle;
+        boxBounds(bounds, left, top, w, h, angle);
     }
 
     @Override
     Item moved(float dx, float dy) {
-        return new Picture(bmp, encoded, left + dx, top + dy, w, h);
+        return new Picture(bmp, encoded, left + dx, top + dy, w, h, angle);
     }
 
     @Override
     Item scaled(float s, float cx, float cy) {
-        return new Picture(bmp, encoded, cx + (left - cx) * s, cy + (top - cy) * s, w * s, h * s);
+        return new Picture(bmp, encoded, cx + (left - cx) * s, cy + (top - cy) * s, w * s, h * s, angle);
+    }
+
+    @Override
+    Item rotated(float deg, float cx, float cy) {
+        float[] c = new float[2];
+        turn(c, left + w / 2, top + h / 2, deg, cx, cy);
+        return new Picture(bmp, encoded, c[0] - w / 2, c[1] - h / 2, w, h, angle + deg);
     }
 }
 
@@ -168,6 +203,13 @@ final class Group extends Item {
     Item scaled(float s, float cx, float cy) {
         ArrayList<Item> m = new ArrayList<>();
         for (Item it : items) m.add(it.scaled(s, cx, cy));
+        return new Group(m, fx);
+    }
+
+    @Override
+    Item rotated(float deg, float cx, float cy) {
+        ArrayList<Item> m = new ArrayList<>();
+        for (Item it : items) m.add(it.rotated(deg, cx, cy));
         return new Group(m, fx);
     }
 }
@@ -246,6 +288,17 @@ final class Stroke extends Item {
         for (int i = 0; i < n; i++) s.add(cx + (x[i] - cx) * sc, cy + (y[i] - cy) * sc, p[i]);
         return s;
     }
+
+    @Override
+    Item rotated(float deg, float cx, float cy) {
+        Stroke s = copyStyle();
+        float[] q = new float[2];
+        for (int i = 0; i < n; i++) {
+            turn(q, x[i], y[i], deg, cx, cy);
+            s.add(q[0], q[1], p[i]);
+        }
+        return s;
+    }
 }
 
 /** Bucket fill: a binary mask cropped to its bounds, tinted with a colour when drawn. */
@@ -256,6 +309,8 @@ final class Fill extends Item {
     final float left, top;
     int color, frames, seed;
     float wobble, speed;
+    /** Rotation in degrees around the mask's own centre. */
+    float angle;
 
     Fill(byte[] data, int w, int h, float left, float top) {
         this(makeMask(data, w, h), data, w, h, left, top);
@@ -301,7 +356,22 @@ final class Fill extends Item {
         return copyLook(new Fill(d, nw, nh, cx + (left - cx) * s, cy + (top - cy) * s));
     }
 
+    @Override
+    Item rotated(float deg, float cx, float cy) {
+        float[] c = new float[2];
+        turn(c, left + w / 2f, top + h / 2f, deg, cx, cy);
+        Fill f = copyLook(new Fill(mask, data, w, h, c[0] - w / 2f, c[1] - h / 2f));
+        f.setAngle(angle + deg);
+        return f;
+    }
+
+    void setAngle(float a) {
+        angle = a;
+        boxBounds(bounds, left, top, w, h, a);
+    }
+
     private Fill copyLook(Fill f) {
+        f.setAngle(angle);
         f.color = color;
         f.frames = frames;
         f.seed = seed;
@@ -349,6 +419,9 @@ final class Layer {
     int effect;
     boolean fxScale;
     float fxSpeed = .3f, fxAmount = .5f, fxRotate = .4f;
+    /** Base point (doc coordinates) for layer effects and lasso transforms; unset means automatic. */
+    boolean hasPivot;
+    float pivotX, pivotY;
     /** One entry per timeline frame; null means "hold the previous drawing". Index 0 is never null. */
     final ArrayList<Cel> cels = new ArrayList<>();
 
@@ -387,6 +460,9 @@ final class Layer {
         l.fxSpeed = fxSpeed;
         l.fxAmount = fxAmount;
         l.fxRotate = fxRotate;
+        l.hasPivot = hasPivot;
+        l.pivotX = pivotX;
+        l.pivotY = pivotY;
         for (Cel c : cels) l.cels.add(c == null ? null : c.copy());
         return l;
     }
@@ -397,10 +473,12 @@ final class Layer {
 }
 
 final class Doc {
-    static final int MAGIC = 0x424F494C, VERSION = 4;
+    static final int MAGIC = 0x424F494C, VERSION = 5;
 
     String name = "Без названия";
     int w, h, bg = 0xFFFFFFFF, fps = 8, frames = 1;
+    /** Plays the line jitter; when off every stroke shows its first boil frame. */
+    boolean boil = true;
     ArrayList<Layer> layers = new ArrayList<>();
 
     Doc(int w, int h) {
@@ -421,6 +499,7 @@ final class Doc {
         d.bg = bg;
         d.fps = fps;
         d.frames = frames;
+        d.boil = boil;
         for (Layer l : layers) d.layers.add(l.copy());
         return d;
     }
@@ -486,6 +565,11 @@ final class Doc {
         if (wrapLo) lo.opacity = 1;
         // the merged layer moves as one piece: keep the lower effect, or take the upper one
         if (!lo.hasEffect() && up.hasEffect()) adoptEffect(lo, up);
+        if (!lo.hasPivot && up.hasPivot) {
+            lo.hasPivot = true;
+            lo.pivotX = up.pivotX;
+            lo.pivotY = up.pivotY;
+        }
         layers.remove(i);
     }
 
@@ -570,6 +654,9 @@ final class Doc {
             o.writeFloat(l.fxSpeed);
             o.writeFloat(l.fxAmount);
             o.writeFloat(l.fxRotate);
+            o.writeBoolean(l.hasPivot);
+            o.writeFloat(l.pivotX);
+            o.writeFloat(l.pivotY);
             for (int f = 0; f < frames; f++) {
                 Cel c = f < l.cels.size() ? l.cels.get(f) : null;
                 if (c == null) {
@@ -583,6 +670,11 @@ final class Doc {
                 }
             }
         }
+        writeTail(o, this);
+    }
+
+    private static void writeTail(DataOutputStream o, Doc d) throws IOException {
+        o.writeBoolean(d.boil);
     }
 
     private static void writeItem(DataOutputStream o, Item it) throws IOException {
@@ -597,6 +689,7 @@ final class Doc {
             o.writeFloat(pc.h);
             o.writeInt(pc.encoded.length);
             o.write(pc.encoded);
+            o.writeFloat(pc.angle);
         } else if (it instanceof Fill) {
             writeFill(o, (Fill) it);
         } else {
@@ -616,14 +709,15 @@ final class Doc {
     private static Item readItem(DataInputStream in, int ver) throws IOException {
         int type = in.readByte();
         if (type == 1) return readStroke(in, ver);
-        if (type == 2) return readFill(in);
+        if (type == 2) return readFill(in, ver);
         if (type == 4) {
             float l = in.readFloat(), t = in.readFloat(), w = in.readFloat(), h = in.readFloat();
             byte[] enc = new byte[in.readInt()];
             in.readFully(enc);
+            float ang = ver >= 5 ? in.readFloat() : 0;
             Bitmap b = android.graphics.BitmapFactory.decodeByteArray(enc, 0, enc.length);
             if (b == null) b = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
-            return new Picture(b, enc, l, t, w, h);
+            return new Picture(b, enc, l, t, w, h, ang);
         }
         Layer fx = Layer.empty();
         fx.opacity = in.readFloat();
@@ -680,6 +774,7 @@ final class Doc {
             o.writeChar(run);
             i += run;
         }
+        o.writeFloat(f.angle);
     }
 
     static Doc read(DataInputStream in) throws IOException {
@@ -704,6 +799,11 @@ final class Doc {
             l.fxSpeed = in.readFloat();
             l.fxAmount = in.readFloat();
             l.fxRotate = in.readFloat();
+            if (ver >= 5) {
+                l.hasPivot = in.readBoolean();
+                l.pivotX = in.readFloat();
+                l.pivotY = in.readFloat();
+            }
             for (int f = 0; f < d.frames; f++) {
                 if (in.readByte() == 0) {
                     l.cels.add(f == 0 ? new Cel() : null);
@@ -718,6 +818,7 @@ final class Doc {
             }
             d.layers.add(l);
         }
+        if (ver >= 5) d.boil = in.readBoolean();
         if (d.layers.isEmpty()) d.layers.add(new Layer("Слой 1", d.frames));
         d.liftGroupEffects();
         return d;
@@ -746,7 +847,7 @@ final class Doc {
         return s;
     }
 
-    private static Fill readFill(DataInputStream in) throws IOException {
+    private static Fill readFill(DataInputStream in, int ver) throws IOException {
         int color = in.readInt();
         float wobble = in.readFloat(), speed = in.readFloat();
         int frames = in.readInt(), seed = in.readInt();
@@ -766,6 +867,7 @@ final class Doc {
         f.speed = speed;
         f.frames = frames;
         f.seed = seed;
+        if (ver >= 5) f.setAngle(in.readFloat());
         return f;
     }
 

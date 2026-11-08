@@ -55,7 +55,9 @@ final class CanvasView extends View {
     private final float[] mv = new float[9];
 
     private static final int M_NONE = 0, M_DRAW = 1, M_GESTURE = 2, M_GEST_END = 3, M_LASSO = 4,
-            M_MOVE = 5, M_PICK = 6, M_FILL = 7, M_IGNORE = 8;
+            M_MOVE = 5, M_PICK = 6, M_FILL = 7, M_IGNORE = 8, M_PIVOT = 9;
+    /** Next touch places the active layer's base point. */
+    boolean pivotMode;
     private int mode;
     private long downTime;
     private int maxPtr;
@@ -211,6 +213,7 @@ final class CanvasView extends View {
         extra.dy = selDy;
         extra.onion = onion && !playing;
         extra.freezeActive = live != null || !sel.isEmpty() || mode == M_LASSO;
+        renderer.boilOn = doc.boil;
         renderer.render(c, doc, frame, t, true, true, extra, null);
         c.restore();
         overlays(c, t);
@@ -246,6 +249,13 @@ final class CanvasView extends View {
             ui.setColor(0xFF000000);
             c.drawCircle(x, y, Ui.dp(39), ui);
         }
+        Layer al = activeLayer();
+        if (al.hasPivot && (tool == LASSO || pivotMode || mode == M_PIVOT || showPivot)) {
+            pt[0] = al.pivotX;
+            pt[1] = al.pivotY;
+            view.mapPoints(pt);
+            drawPivot(c, pt[0], pt[1]);
+        }
         if (previewSize > 0) {
             float r = Math.max(Ui.dp(2), previewSize * scale() / 2);
             float cx = getWidth() / 2f, cy = getHeight() / 2f;
@@ -260,6 +270,37 @@ final class CanvasView extends View {
             ui.setColor(0xFF000000);
             c.drawCircle(cx, cy, r + Ui.dp(3.5f), ui);
         }
+    }
+
+    /** Shown while the effect panel is open so the base point can be seen. */
+    boolean showPivot;
+
+    private void drawPivot(Canvas c, float x, float y) {
+        float r = Ui.dp(9);
+        ui.setPathEffect(null);
+        ui.setStyle(Paint.Style.FILL);
+        ui.setColor(0x55000000);
+        c.drawCircle(x, y, r + Ui.dp(3), ui);
+        ui.setStyle(Paint.Style.STROKE);
+        ui.setStrokeWidth(Ui.dp(2));
+        ui.setColor(0xFFFFFFFF);
+        c.drawCircle(x, y, r, ui);
+        c.drawLine(x - r - Ui.dp(6), y, x - Ui.dp(3), y, ui);
+        c.drawLine(x + Ui.dp(3), y, x + r + Ui.dp(6), y, ui);
+        c.drawLine(x, y - r - Ui.dp(6), x, y - Ui.dp(3), ui);
+        c.drawLine(x, y + Ui.dp(3), x, y + r + Ui.dp(6), ui);
+        ui.setStyle(Paint.Style.FILL);
+        c.drawCircle(x, y, Ui.dp(2.5f), ui);
+    }
+
+    /** Whether a screen point grabs the active layer's base point handle. */
+    private boolean onPivot(float sx, float sy) {
+        Layer al = activeLayer();
+        if (!al.hasPivot) return false;
+        pt[0] = al.pivotX;
+        pt[1] = al.pivotY;
+        view.mapPoints(pt);
+        return Math.hypot(sx - pt[0], sy - pt[1]) < Ui.dp(26);
     }
 
     private void ants(Canvas c, Path p, float t, float dash) {
@@ -391,6 +432,12 @@ final class CanvasView extends View {
     private void toolDown(MotionEvent e) {
         downX = e.getX();
         downY = e.getY();
+        if (pivotMode || (tool == LASSO && onPivot(downX, downY))) {
+            history.push(this);
+            mode = M_PIVOT;
+            movePivot(downX, downY);
+            return;
+        }
         toDoc(downX, downY);
         float x = pt[0], y = pt[1];
         switch (tool) {
@@ -428,8 +475,27 @@ final class CanvasView extends View {
         }
     }
 
+    private void movePivot(float sx, float sy) {
+        toDoc(sx, sy);
+        Layer al = activeLayer();
+        al.hasPivot = true;
+        al.pivotX = pt[0];
+        al.pivotY = pt[1];
+    }
+
+    void clearPivot() {
+        Layer al = activeLayer();
+        if (!al.hasPivot) return;
+        history.push(this);
+        al.hasPivot = false;
+        changed();
+    }
+
     private void toolMove(MotionEvent e) {
         switch (mode) {
+            case M_PIVOT:
+                movePivot(e.getX(), e.getY());
+                break;
             case M_DRAW:
                 strokeMove(e);
                 break;
@@ -457,6 +523,11 @@ final class CanvasView extends View {
 
     private void toolUp(MotionEvent e) {
         switch (mode) {
+            case M_PIVOT:
+                movePivot(e.getX(), e.getY());
+                pivotMode = false;
+                changed();
+                break;
             case M_DRAW:
                 strokeMove(e);
                 commitStroke(e);
@@ -631,11 +702,43 @@ final class CanvasView extends View {
         return !sel.isEmpty();
     }
 
+    private float pivotX(RectF b) {
+        Layer al = activeLayer();
+        return al.hasPivot ? al.pivotX : b.centerX();
+    }
+
+    private float pivotY(RectF b) {
+        Layer al = activeLayer();
+        return al.hasPivot ? al.pivotY : b.centerY();
+    }
+
+    /** Turns the selection by deg degrees around the layer's base point (or its own centre). */
+    void rotateSelection(float deg) {
+        if (sel.isEmpty()) return;
+        history.push(this);
+        RectF b = selBounds(0);
+        float cx = pivotX(b), cy = pivotY(b);
+        Cel cel = activeCel();
+        HashSet<Item> turned = new HashSet<>();
+        for (int i = 0; i < cel.items.size(); i++) {
+            Item it = cel.items.get(i);
+            if (sel.contains(it)) {
+                Item m = it.rotated(deg, cx, cy);
+                cel.items.set(i, m);
+                turned.add(m);
+            }
+        }
+        cel.touch();
+        sel.clear();
+        sel.addAll(turned);
+        changed();
+    }
+
     void scaleSelection(float s) {
         if (sel.isEmpty()) return;
         history.push(this);
         RectF b = selBounds(0);
-        float cx = b.centerX(), cy = b.centerY();
+        float cx = pivotX(b), cy = pivotY(b);
         Cel cel = activeCel();
         HashSet<Item> scaled = new HashSet<>();
         for (int i = 0; i < cel.items.size(); i++) {

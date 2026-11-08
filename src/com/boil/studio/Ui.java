@@ -208,6 +208,10 @@ final class Ui {
             case "minus": return "M5 12H19";
             case "ref": return "M3 5H14V14H3ZM9 14V19H21V9H14";
             case "selall": return "M4 8V4H8M16 4H20V8M20 16V20H16M8 20H4V16M9 9H15V15H9Z";
+            case "boil": return "M3 12C5 8 7 8 9 12C11 16 13 16 15 12C17 8 19 8 21 12";
+            case "rotl": return "M8 4H4V8M4 8C6 4.5 9 3.5 12 3.5C16.7 3.5 20.5 7.3 20.5 12C20.5 16.7 16.7 20.5 12 20.5C8.5 20.5 5.5 18.5 4.3 15.5";
+            case "rotr": return "M16 4H20V8M20 8C18 4.5 15 3.5 12 3.5C7.3 3.5 3.5 7.3 3.5 12C3.5 16.7 7.3 20.5 12 20.5C15.5 20.5 18.5 18.5 19.7 15.5";
+            case "pivot": return "O12 12 4M12 3V8M12 16V21M3 12H8M16 12H21";
             case "merge": return "M6 4H18M6 9H18M12 13V20M8.5 16.5L12 20L15.5 16.5";
             case "video": return "M3 6H15V18H3ZM15 10.5L21 7V17L15 13.5";
             case "film": return "M4 5H20V19H4ZM8 5V19M16 5V19M4 9.5H8M4 14.5H8M16 9.5H20M16 14.5H20";
