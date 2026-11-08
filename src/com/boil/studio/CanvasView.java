@@ -30,6 +30,9 @@ final class CanvasView extends View {
         void onFrame();
 
         void onPlayStopped();
+
+        /** A brush or eraser stroke started (true) or ended (false). */
+        void onDrawing(boolean drawing);
     }
 
     Doc doc;
@@ -371,8 +374,10 @@ final class CanvasView extends View {
                     toolUp(e);
                 }
                 mode = M_NONE;
+                if (host != null) host.onDrawing(false);
                 break;
             case MotionEvent.ACTION_CANCEL:
+                if (host != null) host.onDrawing(false);
                 live = null;
                 lassoActive = false;
                 selDx = selDy = 0;
@@ -445,6 +450,7 @@ final class CanvasView extends View {
             case ERASER:
                 startStroke(x, y, pressure(e, -1));
                 mode = M_DRAW;
+                if (host != null) host.onDrawing(true);
                 break;
             case LASSO:
                 if (!sel.isEmpty() && selBounds(12 / scale()).contains(x, y)) {

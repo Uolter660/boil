@@ -20,6 +20,7 @@ import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.inputmethod.EditorInfo;
@@ -53,6 +54,13 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     private Ui.VSlider sizeS, alphaS;
     private LinearLayout frameStrip, selBar;
     private HorizontalScrollView frameScroll;
+    private android.widget.ScrollView frameVScroll;
+    private FrameLayout barLayer, framesHost;
+    private LinearLayout editBar;
+    private final java.util.LinkedHashMap<String, View> controls = new java.util.LinkedHashMap<>();
+    private final BarFrame[] barFrames = new BarFrame[UiConfig.BARS];
+    private final UiConfig ui = new UiConfig();
+    private boolean editMode;
     private TextView fpsT, hint;
     private String panel;
     private Runnable panelRefresh;
@@ -96,7 +104,9 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         cv.host = this;
         loadPrefs();
         cv.setDoc(doc);
+        ui.fromJson(prefs.getString("ui", null));
         build();
+        layoutBars();
         immersive();
         syncAll();
         File rf = Storage.refFile(this, id);
@@ -123,206 +133,22 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         root = new FrameLayout(this);
         root.setBackgroundColor(Ui.BG);
         root.addView(cv, new FrameLayout.LayoutParams(-1, -1));
-        int sw = getResources().getDisplayMetrics().widthPixels, sh = getResources().getDisplayMetrics().heightPixels;
-
-        // top: menu + tool pill
-        HorizontalScrollView topScroll = new HorizontalScrollView(this);
-        topScroll.setHorizontalScrollBarEnabled(false);
-        topScroll.setFillViewport(true);
-        topScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        LinearLayout top = Ui.row(this);
-        top.setGravity(Gravity.CENTER);
-        top.setPadding(dp(10), dp(10), dp(10), dp(4));
-        Ui.Icon menuI = icon("menu", new View.OnClickListener() {
+        barLayer = new FrameLayout(this);
+        root.addView(barLayer, new FrameLayout.LayoutParams(-1, -1));
+        barLayer.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
             @Override
-            public void onClick(View v) {
-                togglePanel("menu", Gravity.TOP | Gravity.LEFT);
-            }
-        });
-        FrameLayout menuWrap = new FrameLayout(this);
-        menuWrap.setBackground(Ui.round(Ui.PANEL, 23, Ui.LINE));
-        menuWrap.setPadding(dp(4), dp(4), dp(4), dp(4));
-        menuWrap.addView(menuI);
-        top.addView(menuWrap);
-        top.addView(Ui.space(this, 8, 1));
-
-        LinearLayout pill = Ui.row(this);
-        pill.setBackground(Ui.round(Ui.PANEL, 23, Ui.LINE));
-        pill.setPadding(dp(4), dp(4), dp(4), dp(4));
-        brushI = icon("brush", toolClick(CanvasView.BRUSH));
-        eraserI = icon("eraser", toolClick(CanvasView.ERASER));
-        lassoI = icon("lasso", toolClick(CanvasView.LASSO));
-        pickerI = icon("picker", toolClick(CanvasView.PICKER));
-        fillI = icon("fill", toolClick(CanvasView.FILL));
-        fxI = icon("effect", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                togglePanel("fx", Gravity.TOP | Gravity.RIGHT);
-            }
-        });
-        layersI = icon("layers", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                togglePanel("layers", Gravity.TOP | Gravity.RIGHT);
-            }
-        });
-        colorS = new Ui.Swatch(this, cv.color);
-        colorS.ring = true;
-        colorS.setLayoutParams(new LinearLayout.LayoutParams(dp(38), dp(38)));
-        colorS.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                togglePanel("color", Gravity.TOP | Gravity.RIGHT);
-            }
-        });
-        pill.addView(brushI);
-        pill.addView(eraserI);
-        pill.addView(lassoI);
-        pill.addView(pickerI);
-        pill.addView(fillI);
-        pill.addView(Ui.divider(this, true));
-        pill.addView(fxI);
-        pill.addView(layersI);
-        pill.addView(colorS);
-        top.addView(pill);
-        topScroll.addView(top, new FrameLayout.LayoutParams(-1, -2));
-        root.addView(topScroll, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
-
-        // left rail: size, opacity, undo, redo
-        float avail = sh / Ui.D - 64 - 76 - 120;
-        int sizeH = dp(Math.max(70, Math.min(140, avail * 0.55f))), alphaH = dp(Math.max(56, Math.min(104, avail * 0.4f)));
-        LinearLayout rail = Ui.col(this);
-        rail.setGravity(Gravity.CENTER_HORIZONTAL);
-        rail.setBackground(Ui.round(Ui.PANEL, 23, Ui.LINE));
-        rail.setPadding(0, dp(8), 0, dp(4));
-        sizeS = new Ui.VSlider(this, new Ui.OnSlide() {
-            @Override
-            void change(float v) {
-                BrushSettings bs = cv.settings();
-                bs.size = vToSize(v);
-                cv.previewSize = bs.size;
-                showHint("Размер " + fmtSize(bs.size), false);
-            }
-
-            @Override
-            void end() {
-                cv.previewSize = 0;
-                handler.postDelayed(hideHint, 600);
-            }
-        });
-        rail.addView(sizeS, new LinearLayout.LayoutParams(dp(40), sizeH));
-        rail.addView(Ui.space(this, 1, 6));
-        alphaS = new Ui.VSlider(this, new Ui.OnSlide() {
-            @Override
-            void change(float v) {
-                cv.settings().alpha = Math.max(0.02f, v);
-                showHint("Непрозрачность " + Math.round(cv.settings().alpha * 100) + "%", false);
-            }
-
-            @Override
-            void end() {
-                handler.postDelayed(hideHint, 600);
-            }
-        });
-        rail.addView(alphaS, new LinearLayout.LayoutParams(dp(40), alphaH));
-        View d = Ui.divider(this, false);
-        ((LinearLayout.LayoutParams) d.getLayoutParams()).width = dp(22);
-        rail.addView(d);
-        undoI = icon("undo", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                cv.undo();
-            }
-        });
-        redoI = icon("redo", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                cv.redo();
-            }
-        });
-        rail.addView(undoI);
-        rail.addView(redoI);
-        FrameLayout.LayoutParams rl = new FrameLayout.LayoutParams(dp(46), -2, Gravity.LEFT | Gravity.CENTER_VERTICAL);
-        rl.leftMargin = dp(10);
-        root.addView(rail, rl);
-
-        // bottom: timeline
-        LinearLayout tl = Ui.row(this);
-        tl.setBackground(Ui.round(Ui.PANEL, 23, Ui.LINE));
-        tl.setPadding(dp(4), dp(4), dp(8), dp(4));
-        playI = icon("play", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                closePanel();
-                if (cv.doc.frames < 2) {
-                    showHint("Добавьте кадр, чтобы проиграть анимацию", true);
-                    return;
+            public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+                if (r - l != or - ol || b - t != ob - ot) {
+                    barLayer.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            layoutBars();
+                        }
+                    });
                 }
-                cv.setPlaying(!cv.playing);
-                playI.setName(cv.playing ? "pause" : "play");
             }
         });
-        tl.addView(playI);
-        tl.addView(Ui.divider(this, true));
-        frameScroll = new HorizontalScrollView(this);
-        frameScroll.setHorizontalScrollBarEnabled(false);
-        frameScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        frameStrip = Ui.row(this);
-        frameScroll.addView(frameStrip);
-        tl.addView(frameScroll, new LinearLayout.LayoutParams(0, dp(38), 1));
-        tl.addView(icon("plus", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                addFrame(false);
-            }
-        }));
-        tl.addView(icon("dup", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                addFrame(true);
-            }
-        }));
-        tl.addView(icon("trash", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                deleteFrame();
-            }
-        }));
-        tl.addView(Ui.divider(this, true));
-        onionI = icon("onion", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                cv.onion = !cv.onion;
-                onionI.setActive(cv.onion);
-                showHint(cv.onion ? "Калька включена" : "Калька выключена", true);
-            }
-        });
-        tl.addView(onionI);
-        boilI = icon("boil", new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                toggleBoil();
-            }
-        });
-        tl.addView(boilI);
-        fpsT = Ui.text(this, "", 12, Ui.TEXT, true);
-        fpsT.setGravity(Gravity.CENTER);
-        fpsT.setPadding(dp(6), dp(8), dp(4), dp(8));
-        fpsT.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                int cur = 0;
-                for (int i = 0; i < FPS.length; i++) if (FPS[i] == cv.doc.fps) cur = i;
-                cv.doc.fps = FPS[(cur + 1) % FPS.length];
-                if (cv.playing) cv.setPlaying(true);
-                dirty = true;
-                fpsT.setText(cv.doc.fps + " к/с");
-            }
-        });
-        tl.addView(fpsT);
-        FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(Math.min(sw - dp(20), dp(640)), -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        tlp.bottomMargin = dp(10);
-        root.addView(tl, tlp);
+        createControls();
 
         // selection actions: whole-layer select, scale, copy, delete
         selBar = Ui.row(this);
@@ -406,6 +232,25 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         sl.rightMargin = dp(10);
         root.addView(selScroll, sl);
 
+        // edit-mode instructions with a Done button
+        editBar = Ui.row(this);
+        editBar.setBackground(Ui.round(Ui.PANEL, 20, Ui.LINE));
+        editBar.setPadding(dp(14), dp(8), dp(8), dp(8));
+        TextView et = Ui.text(this, "Тяните панели · касание — повернуть", 13, Ui.TEXT, false);
+        editBar.addView(et);
+        TextView ed = Ui.button(this, "Готово", true);
+        ed.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setEditMode(false);
+            }
+        });
+        LinearLayout.LayoutParams edl = new LinearLayout.LayoutParams(-2, -2);
+        edl.leftMargin = dp(10);
+        editBar.addView(ed, edl);
+        editBar.setVisibility(View.GONE);
+        root.addView(editBar, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+
         // transient hint
         hint = Ui.text(this, "", 13, Ui.TEXT, true);
         hint.setBackground(Ui.round(Ui.PANEL, 16, Ui.LINE));
@@ -435,6 +280,363 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         p.rightMargin = dp(6);
         t.setLayoutParams(p);
         return t;
+    }
+
+    // ---------- customizable bars ----------
+
+    /** Creates every control once; layoutBars() places them on the bars the user chose. */
+    private void createControls() {
+        controls.clear();
+        controls.put("menu", icon("menu", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("menu", Gravity.TOP | Gravity.LEFT);
+            }
+        }));
+        brushI = icon("brush", toolClick(CanvasView.BRUSH));
+        eraserI = icon("eraser", toolClick(CanvasView.ERASER));
+        lassoI = icon("lasso", toolClick(CanvasView.LASSO));
+        pickerI = icon("picker", toolClick(CanvasView.PICKER));
+        fillI = icon("fill", toolClick(CanvasView.FILL));
+        fxI = icon("effect", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("fx", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
+        layersI = icon("layers", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("layers", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
+        colorS = new Ui.Swatch(this, cv.color);
+        colorS.ring = true;
+        colorS.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("color", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
+        controls.put("brush", brushI);
+        controls.put("eraser", eraserI);
+        controls.put("lasso", lassoI);
+        controls.put("picker", pickerI);
+        controls.put("fill", fillI);
+        controls.put("fx", fxI);
+        controls.put("layers", layersI);
+        controls.put("color", colorS);
+
+        undoI = icon("undo", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.undo();
+            }
+        });
+        redoI = icon("redo", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.redo();
+            }
+        });
+        controls.put("undo", undoI);
+        controls.put("redo", redoI);
+        sizeS = new Ui.VSlider(this, new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                BrushSettings bs = cv.settings();
+                bs.size = vToSize(v);
+                cv.previewSize = bs.size;
+                showHint("Размер " + fmtSize(bs.size), false);
+            }
+
+            @Override
+            void end() {
+                cv.previewSize = 0;
+                handler.postDelayed(hideHint, 600);
+            }
+        });
+        alphaS = new Ui.VSlider(this, new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                cv.settings().alpha = Math.max(0.02f, v);
+                showHint("Непрозрачность " + Math.round(cv.settings().alpha * 100) + "%", false);
+            }
+
+            @Override
+            void end() {
+                handler.postDelayed(hideHint, 600);
+            }
+        });
+        controls.put("size", sizeS);
+        controls.put("opacity", alphaS);
+
+        playI = icon("play", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                closePanel();
+                if (cv.doc.frames < 2) {
+                    showHint("Добавьте кадр, чтобы проиграть анимацию", true);
+                    return;
+                }
+                cv.setPlaying(!cv.playing);
+                playI.setName(cv.playing ? "pause" : "play");
+            }
+        });
+        controls.put("play", playI);
+        frameScroll = new HorizontalScrollView(this);
+        frameScroll.setHorizontalScrollBarEnabled(false);
+        frameScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        frameVScroll = new android.widget.ScrollView(this);
+        frameVScroll.setVerticalScrollBarEnabled(false);
+        frameVScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        frameStrip = Ui.row(this);
+        framesHost = new FrameLayout(this);
+        controls.put("frames", framesHost);
+        controls.put("addFrame", icon("plus", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                addFrame(false);
+            }
+        }));
+        controls.put("dupFrame", icon("dup", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                addFrame(true);
+            }
+        }));
+        controls.put("delFrame", icon("trash", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                deleteFrame();
+            }
+        }));
+        onionI = icon("onion", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                cv.onion = !cv.onion;
+                onionI.setActive(cv.onion);
+                showHint(cv.onion ? "Калька включена" : "Калька выключена", true);
+            }
+        });
+        boilI = icon("boil", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                toggleBoil();
+            }
+        });
+        controls.put("onion", onionI);
+        controls.put("boil", boilI);
+        fpsT = Ui.text(this, "", 12, Ui.TEXT, true);
+        fpsT.setGravity(Gravity.CENTER);
+        fpsT.setPadding(dp(6), dp(8), dp(6), dp(8));
+        fpsT.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int cur = 0;
+                for (int i = 0; i < FPS.length; i++) if (FPS[i] == cv.doc.fps) cur = i;
+                cv.doc.fps = FPS[(cur + 1) % FPS.length];
+                if (cv.playing) cv.setPlaying(true);
+                dirty = true;
+                fpsT.setText(cv.doc.fps + " к/с");
+            }
+        });
+        controls.put("fps", fpsT);
+    }
+
+    private static void detach(View v) {
+        if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+    }
+
+    private int panelColor() {
+        return (Math.round(ui.panelAlpha * 255) << 24) | 0x161616;
+    }
+
+    /** Rebuilds the four bars from the current UiConfig and places them on screen. */
+    private void layoutBars() {
+        int sw = barLayer.getWidth() > 0 ? barLayer.getWidth() : getResources().getDisplayMetrics().widthPixels;
+        int sh = barLayer.getHeight() > 0 ? barLayer.getHeight() : getResources().getDisplayMetrics().heightPixels;
+        int S = dp(ui.iconDp);
+        barLayer.removeAllViews();
+        for (View v : controls.values()) detach(v);
+        detach(frameStrip);
+        detach(frameScroll);
+        detach(frameVScroll);
+        for (int b = 0; b < UiConfig.BARS; b++) {
+            barFrames[b] = null;
+            ArrayList<String> list = ui.bars.get(b);
+            if (list.isEmpty()) continue;
+            boolean vert = ui.vertical[b];
+            LinearLayout bar = new LinearLayout(this);
+            bar.setOrientation(vert ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+            bar.setGravity(Gravity.CENTER);
+            bar.setPadding(dp(4), dp(4), dp(4), dp(4));
+            int fixed = 0;
+            for (String id : list) if (!"frames".equals(id)) fixed += "size".equals(id) || "opacity".equals(id) ? dp(120) : S;
+            for (String id : list) {
+                View v = controls.get(id);
+                LinearLayout.LayoutParams lp;
+                if ("size".equals(id) || "opacity".equals(id)) {
+                    Ui.VSlider sl = (Ui.VSlider) v;
+                    sl.horizontal = !vert;
+                    int len = dp("size".equals(id) ? 130 : 100);
+                    lp = vert ? new LinearLayout.LayoutParams(S, len) : new LinearLayout.LayoutParams(len, S);
+                } else if ("frames".equals(id)) {
+                    frameStrip.setOrientation(vert ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+                    ViewGroup sc = vert ? frameVScroll : frameScroll;
+                    sc.addView(frameStrip);
+                    framesHost.addView(sc, new FrameLayout.LayoutParams(-1, -1));
+                    int avail = (vert ? sh : sw) - fixed - dp(40);
+                    int len = Math.max(dp(110), Math.min(dp(380), avail));
+                    lp = vert ? new LinearLayout.LayoutParams(S, len) : new LinearLayout.LayoutParams(len, S);
+                } else if ("fps".equals(id)) {
+                    lp = vert ? new LinearLayout.LayoutParams(-2, S) : new LinearLayout.LayoutParams(-2, S);
+                } else {
+                    lp = new LinearLayout.LayoutParams(S, S);
+                }
+                bar.addView(v, lp);
+            }
+            BarFrame f = new BarFrame(b);
+            f.setBackground(Ui.round(panelColor(), 23, Ui.LINE));
+            f.setClipToOutline(true);
+            ViewGroup scroll;
+            if (vert) {
+                android.widget.ScrollView sv = new android.widget.ScrollView(this);
+                sv.setVerticalScrollBarEnabled(false);
+                sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                scroll = sv;
+            } else {
+                HorizontalScrollView hv = new HorizontalScrollView(this);
+                hv.setHorizontalScrollBarEnabled(false);
+                hv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                scroll = hv;
+            }
+            scroll.addView(bar);
+            f.addView(scroll, new FrameLayout.LayoutParams(-2, -2));
+            if (editMode) f.setForeground(editOutline());
+            barLayer.addView(f, new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT));
+            barFrames[b] = f;
+        }
+        styleFrames();
+        barLayer.post(new Runnable() {
+            @Override
+            public void run() {
+                positionBars();
+            }
+        });
+    }
+
+    private void positionBars() {
+        float W = barLayer.getWidth(), H = barLayer.getHeight();
+        if (W <= 0) return;
+        float m = dp(10);
+        for (int b = 0; b < UiConfig.BARS; b++) {
+            BarFrame f = barFrames[b];
+            if (f == null) continue;
+            float w = f.getWidth(), h = f.getHeight(), x, y;
+            if (!Float.isNaN(ui.px[b])) {
+                x = ui.px[b] * W - w / 2;
+                y = ui.py[b] * H - h / 2;
+            } else if (b == UiConfig.TOP) {
+                x = (W - w) / 2;
+                y = m;
+            } else if (b == UiConfig.LEFT) {
+                x = m;
+                y = (H - h) / 2;
+            } else if (b == UiConfig.BOTTOM) {
+                x = (W - w) / 2;
+                y = H - h - m;
+            } else {
+                x = W - w - m;
+                y = (H - h) / 2;
+            }
+            f.setTranslationX(Math.max(dp(4), Math.min(W - w - dp(4), x)));
+            f.setTranslationY(Math.max(dp(4), Math.min(H - h - dp(4), y)));
+        }
+    }
+
+    private android.graphics.drawable.GradientDrawable editOutline() {
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setColor(0x22FFFFFF);
+        g.setCornerRadius(dp(23));
+        g.setStroke(dp(2), 0xFFFFFFFF, dp(6), dp(4));
+        return g;
+    }
+
+    private void saveUi() {
+        prefs.edit().putString("ui", ui.toJson()).apply();
+    }
+
+    /** Wrapper of one bar: in edit mode it swallows touches to drag the bar, or turns it on a tap. */
+    private final class BarFrame extends FrameLayout {
+        final int index;
+        private float downX, downY, startX, startY;
+        private boolean dragged;
+
+        BarFrame(int index) {
+            super(EditorActivity.this);
+            this.index = index;
+        }
+
+        @Override
+        protected void onMeasure(int wSpec, int hSpec) {
+            int pw = barLayer.getWidth() > 0 ? barLayer.getWidth() : getResources().getDisplayMetrics().widthPixels;
+            int ph = barLayer.getHeight() > 0 ? barLayer.getHeight() : getResources().getDisplayMetrics().heightPixels;
+            super.onMeasure(MeasureSpec.makeMeasureSpec(pw - dp(8), MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(ph - dp(8), MeasureSpec.AT_MOST));
+        }
+
+        @Override
+        public boolean onInterceptTouchEvent(MotionEvent e) {
+            return editMode;
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            if (!editMode) return super.onTouchEvent(e);
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = e.getRawX();
+                    downY = e.getRawY();
+                    startX = getTranslationX();
+                    startY = getTranslationY();
+                    dragged = false;
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
+                    if (Math.abs(dx) + Math.abs(dy) > dp(8)) dragged = true;
+                    float W = barLayer.getWidth(), H = barLayer.getHeight();
+                    setTranslationX(Math.max(dp(4), Math.min(W - getWidth() - dp(4), startX + dx)));
+                    setTranslationY(Math.max(dp(4), Math.min(H - getHeight() - dp(4), startY + dy)));
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                    if (dragged) {
+                        ui.px[index] = (getTranslationX() + getWidth() / 2f) / barLayer.getWidth();
+                        ui.py[index] = (getTranslationY() + getHeight() / 2f) / barLayer.getHeight();
+                    } else {
+                        ui.vertical[index] = !ui.vertical[index];
+                        layoutBars();
+                    }
+                    saveUi();
+                    return true;
+                default:
+                    return true;
+            }
+        }
+    }
+
+    private void setEditMode(boolean on) {
+        editMode = on;
+        closePanel();
+        for (BarFrame f : barFrames) if (f != null) f.setForeground(on ? editOutline() : null);
+        editBar.setVisibility(on ? View.VISIBLE : View.GONE);
+    }
+
+    @Override
+    public void onDrawing(boolean drawing) {
+        if (!ui.fadeWhileDrawing) return;
+        barLayer.animate().alpha(drawing ? 0.12f : 1f).setDuration(drawing ? 120 : 220).start();
     }
 
     private View.OnClickListener toolClick(final int tool) {
@@ -586,8 +788,13 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             frameScroll.post(new Runnable() {
                 @Override
                 public void run() {
-                    int x = cur.getLeft() - frameScroll.getWidth() / 2 + cur.getWidth() / 2;
-                    frameScroll.smoothScrollTo(Math.max(0, x), 0);
+                    if (frameStrip.getOrientation() == LinearLayout.VERTICAL) {
+                        int y = cur.getTop() - frameVScroll.getHeight() / 2 + cur.getHeight() / 2;
+                        frameVScroll.smoothScrollTo(0, Math.max(0, y));
+                    } else {
+                        int x = cur.getLeft() - frameScroll.getWidth() / 2 + cur.getWidth() / 2;
+                        frameScroll.smoothScrollTo(Math.max(0, x), 0);
+                    }
                 }
             });
         }
@@ -719,6 +926,9 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                 break;
             case "fx":
                 fxPanel(content);
+                break;
+            case "ui":
+                uiPanel(content);
                 break;
             default:
                 menuPanel(content);
@@ -1428,9 +1638,189 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         };
     }
 
+    /** Full interface customisation: bar placement, order, visibility, orientation, sizes. */
+    private void uiPanel(LinearLayout c) {
+        header(c, "Интерфейс", "расставьте всё так, как удобно вам");
+        LinearLayout actions = Ui.row(this);
+        TextView move = Ui.button(this, "Двигать панели", true);
+        move.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setEditMode(true);
+            }
+        });
+        actions.addView(move, Ui.lpw(1));
+        TextView reset = Ui.button(this, "Сбросить", false);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                ui.reset();
+                saveUi();
+                layoutBars();
+                togglePanel("ui", Gravity.TOP | Gravity.LEFT);
+                togglePanel("ui", Gravity.TOP | Gravity.LEFT);
+                showHint("Интерфейс сброшен", true);
+            }
+        });
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-2, -2);
+        rp.leftMargin = dp(8);
+        actions.addView(reset, rp);
+        c.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+
+        final Ui.Slider size = new Ui.Slider(this, "Размер кнопок", 0, null);
+        size.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                ui.iconDp = Math.round(30 + v * 22);
+                size.set(v, Math.round(ui.iconDp) + " dp");
+            }
+
+            @Override
+            void end() {
+                layoutBars();
+                saveUi();
+            }
+        };
+        size.set((ui.iconDp - 30) / 22f, Math.round(ui.iconDp) + " dp");
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(-1, -2);
+        sp.topMargin = dp(8);
+        c.addView(size, sp);
+        final Ui.Slider alpha = new Ui.Slider(this, "Непрозрачность панелей", 0, null);
+        alpha.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                ui.panelAlpha = 0.3f + v * 0.7f;
+                alpha.set(v, Math.round(ui.panelAlpha * 100) + "%");
+                for (BarFrame f : barFrames) if (f != null) f.setBackground(Ui.round(panelColor(), 23, Ui.LINE));
+            }
+
+            @Override
+            void end() {
+                saveUi();
+            }
+        };
+        alpha.set((ui.panelAlpha - 0.3f) / 0.7f, Math.round(ui.panelAlpha * 100) + "%");
+        c.addView(alpha, new LinearLayout.LayoutParams(-1, -2));
+        toggleRow(c, "Прятать панели во время рисования", ui.fadeWhileDrawing, new Done() {
+            @Override
+            public void done(String s) {
+                ui.fadeWhileDrawing = !ui.fadeWhileDrawing;
+                saveUi();
+            }
+        });
+
+        label(c, "Панели · вертикальная или горизонтальная");
+        for (int b = 0; b < UiConfig.BARS; b++) {
+            final int bi = b;
+            toggleRow(c, UiConfig.BAR_NAMES[b] + " панель вертикальная", ui.vertical[b], new Done() {
+                @Override
+                public void done(String s) {
+                    ui.vertical[bi] = !ui.vertical[bi];
+                    saveUi();
+                    layoutBars();
+                }
+            });
+        }
+
+        label(c, "Кнопки · где находятся и в каком порядке");
+        final LinearLayout list = Ui.col(this);
+        c.addView(list, new LinearLayout.LayoutParams(-1, -2));
+        panelRefresh = new Runnable() {
+            @Override
+            public void run() {
+                fillUiButtons(list);
+            }
+        };
+        panelRefresh.run();
+        TextView tip = Ui.text(this, "Нажмите на место кнопки, чтобы перенести её на другую панель или скрыть. Стрелки меняют порядок. Меню скрыть нельзя — через него открываются эти настройки.", 11, Ui.FAINT, false);
+        tip.setPadding(dp(4), dp(10), dp(4), dp(2));
+        tip.setLineSpacing(dp(2), 1);
+        c.addView(tip);
+    }
+
+    private void toggleRow(LinearLayout c, String text, boolean on, final Done onToggle) {
+        LinearLayout r = Ui.row(this);
+        r.setPadding(0, dp(8), 0, dp(8));
+        r.addView(Ui.text(this, text, 14, Ui.TEXT, false), Ui.lpw(1));
+        final Ui.Toggle t = new Ui.Toggle(this, on);
+        t.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                t.on = !t.on;
+                t.invalidate();
+                onToggle.done(null);
+            }
+        });
+        r.addView(t);
+        c.addView(r, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void fillUiButtons(LinearLayout list) {
+        list.removeAllViews();
+        for (int b = -1; b < UiConfig.BARS; b++) {
+            ArrayList<String> ids = b < 0 ? ui.hidden : ui.bars.get(b);
+            if (ids.isEmpty()) continue;
+            TextView cap = Ui.text(this, b < 0 ? "Скрытые" : UiConfig.BAR_NAMES[b] + " панель", 12, Ui.DIM, true);
+            cap.setPadding(dp(4), dp(10), 0, dp(4));
+            list.addView(cap);
+            for (final String id : new ArrayList<>(ids)) {
+                LinearLayout row = Ui.row(this);
+                row.setPadding(dp(8), dp(2), dp(2), dp(2));
+                row.setBackground(Ui.round(0xFF202020, 12, 0));
+                row.addView(Ui.text(this, UiConfig.name(id), 14, b < 0 ? Ui.DIM : Ui.TEXT, false), Ui.lpw(1));
+                final int cur = b;
+                TextView where = Ui.text(this, b < 0 ? "Скрыта" : UiConfig.BAR_SHORT[b], 12, Ui.TEXT, true);
+                where.setGravity(Gravity.CENTER);
+                where.setPadding(dp(10), dp(6), dp(10), dp(6));
+                where.setBackground(Ui.round(Ui.CHIP, 10, Ui.LINE));
+                where.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        int next = cur + 1;
+                        if (next >= UiConfig.BARS) next = "menu".equals(id) ? 0 : -1;
+                        ui.moveTo(id, next);
+                        saveUi();
+                        layoutBars();
+                        if (panelRefresh != null) panelRefresh.run();
+                    }
+                });
+                row.addView(where);
+                if (b >= 0) {
+                    row.addView(smallIcon("up", new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            ui.shift(id, -1);
+                            saveUi();
+                            layoutBars();
+                            if (panelRefresh != null) panelRefresh.run();
+                        }
+                    }));
+                    row.addView(smallIcon("down", new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            ui.shift(id, 1);
+                            saveUi();
+                            layoutBars();
+                            if (panelRefresh != null) panelRefresh.run();
+                        }
+                    }));
+                }
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                lp.bottomMargin = dp(4);
+                list.addView(row, lp);
+            }
+        }
+    }
+
     private void menuPanel(LinearLayout c) {
         Doc d = cv.doc;
         header(c, d.name, d.w + " × " + d.h + " · " + d.frames + " " + plural(d.frames, "кадр", "кадра", "кадров") + " · " + d.fps + " к/с");
+        menuRow(c, "sliders", "Настроить интерфейс", new Runnable() {
+            @Override
+            public void run() {
+                togglePanel("ui", Gravity.TOP | Gravity.LEFT);
+            }
+        });
         menuRow(c, "grid", "Галерея", new Runnable() {
             @Override
             public void run() {

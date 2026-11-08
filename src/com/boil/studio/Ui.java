@@ -208,6 +208,7 @@ final class Ui {
             case "minus": return "M5 12H19";
             case "ref": return "M3 5H14V14H3ZM9 14V19H21V9H14";
             case "selall": return "M4 8V4H8M16 4H20V8M20 16V20H16M8 20H4V16M9 9H15V15H9Z";
+            case "sliders": return "M4 7H13M19 7H20M4 17H6M12 17H20O16 7 2.5O9 17 2.5";
             case "boil": return "M3 12C5 8 7 8 9 12C11 16 13 16 15 12C17 8 19 8 21 12";
             case "rotl": return "M8 4H4V8M4 8C6 4.5 9 3.5 12 3.5C16.7 3.5 20.5 7.3 20.5 12C20.5 16.7 16.7 20.5 12 20.5C8.5 20.5 5.5 18.5 4.3 15.5";
             case "rotr": return "M16 4H20V8M20 8C18 4.5 15 3.5 12 3.5C7.3 3.5 3.5 7.3 3.5 12C3.5 16.7 7.3 20.5 12 20.5C15.5 20.5 18.5 18.5 19.7 15.5";
@@ -364,8 +365,10 @@ final class Ui {
     }
 
     /** Vertical rail slider used on the left side for size and opacity. */
+    /** Rail slider for size and opacity; vertical by default, horizontal when placed on a horizontal bar. */
     static final class VSlider extends View {
         float v;
+        boolean horizontal;
         OnSlide l;
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -379,25 +382,47 @@ final class Ui {
             invalidate();
         }
 
+        /** Track ends along the slider axis: start (value 0) and end (value 1). */
+        private float a0() {
+            float r = dp(7);
+            return horizontal ? r + dp(4) : getHeight() - r - dp(4);
+        }
+
+        private float a1() {
+            float r = dp(7);
+            return horizontal ? getWidth() - r - dp(4) : r + dp(4);
+        }
+
         @Override
         protected void onDraw(Canvas c) {
-            float w = getWidth(), h = getHeight(), r = dp(7), cx = w / 2;
-            float y0 = h - r - dp(4), y1 = r + dp(4);
-            float ky = y0 + (y1 - y0) * v;
+            float w = getWidth(), h = getHeight(), r = dp(7);
+            float s0 = a0(), s1 = a1(), k = s0 + (s1 - s0) * v;
             p.setStrokeCap(Paint.Cap.ROUND);
             p.setStrokeWidth(dp(3));
-            p.setColor(LINE);
-            c.drawLine(cx, y0, cx, y1, p);
-            p.setColor(0xFFFFFFFF);
-            c.drawLine(cx, y0, cx, ky, p);
-            p.setStyle(Paint.Style.FILL);
-            c.drawCircle(cx, ky, r, p);
+            p.setStyle(Paint.Style.STROKE);
+            if (horizontal) {
+                float cy = h / 2;
+                p.setColor(LINE);
+                c.drawLine(s0, cy, s1, cy, p);
+                p.setColor(0xFFFFFFFF);
+                c.drawLine(s0, cy, k, cy, p);
+                p.setStyle(Paint.Style.FILL);
+                c.drawCircle(k, cy, r, p);
+            } else {
+                float cx = w / 2;
+                p.setColor(LINE);
+                c.drawLine(cx, s0, cx, s1, p);
+                p.setColor(0xFFFFFFFF);
+                c.drawLine(cx, s0, cx, k, p);
+                p.setStyle(Paint.Style.FILL);
+                c.drawCircle(cx, k, r, p);
+            }
         }
 
         @Override
         public boolean onTouchEvent(MotionEvent e) {
-            float r = dp(7), h = getHeight(), y0 = h - r - dp(4), y1 = r + dp(4);
-            float nv = Math.max(0, Math.min(1, (e.getY() - y0) / (y1 - y0)));
+            float pos = horizontal ? e.getX() : e.getY();
+            float nv = Math.max(0, Math.min(1, (pos - a0()) / (a1() - a0())));
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     getParent().requestDisallowInterceptTouchEvent(true);
