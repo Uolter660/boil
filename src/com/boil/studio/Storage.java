@@ -37,6 +37,10 @@ final class Storage {
         return new File(dir(c), id + ".boil");
     }
 
+    static File audioFile(Context c, String id) {
+        return new File(dir(c), id + ".pcm");
+    }
+
     static File refFile(Context c, String id) {
         return new File(dir(c), id + ".ref");
     }
@@ -122,10 +126,25 @@ final class Storage {
         return out;
     }
 
+    private static void copyFile(File from, File to) throws IOException {
+        if (!from.exists()) return;
+        FileInputStream in = new FileInputStream(from);
+        FileOutputStream out = new FileOutputStream(to);
+        try {
+            byte[] buf = new byte[1 << 16];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } finally {
+            in.close();
+            out.close();
+        }
+    }
+
     static void delete(Context c, String id) {
         docFile(c, id).delete();
         thumbFile(c, id).delete();
         refFile(c, id).delete();
+        audioFile(c, id).delete();
     }
 
     static void rename(Context c, String id, String name) throws IOException {
@@ -138,6 +157,8 @@ final class Storage {
         Doc d = load(c, id);
         d.name = d.name + " (копия)";
         String nid = newId();
+        copyFile(audioFile(c, id), audioFile(c, nid));
+        copyFile(refFile(c, id), refFile(c, nid));
         save(c, nid, d);
         return nid;
     }

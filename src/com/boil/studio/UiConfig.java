@@ -12,10 +12,10 @@ import java.util.ArrayList;
  */
 final class UiConfig {
     static final String[] IDS = {"menu", "brush", "eraser", "lasso", "picker", "fill", "fx", "layers", "color",
-            "undo", "redo", "symmetry", "ruler", "size", "opacity", "play", "frames", "addFrame", "dupFrame", "delFrame", "onion", "boil", "fps"};
+            "undo", "redo", "symmetry", "ruler", "size", "opacity", "play", "frames", "addFrame", "dupFrame", "delFrame", "onion", "boil", "fps", "camera", "anim", "audio"};
     static final String[] NAMES = {"Меню", "Кисть", "Ластик", "Лассо", "Пипетка", "Заливка", "Эффект слоя", "Слои", "Цвет",
             "Отменить", "Повторить", "Симметрия", "Линейка", "Размер кисти", "Непрозрачность кисти", "Воспроизведение", "Лента кадров", "Новый кадр",
-            "Дублировать кадр", "Удалить кадр", "Калька", "Дрожание линий", "Скорость кадров"};
+            "Дублировать кадр", "Удалить кадр", "Калька", "Дрожание линий", "Скорость кадров", "Камера и переходы", "Анимация слоя", "Звук"};
     static final String[] BAR_NAMES = {"Верхняя", "Левая", "Нижняя", "Правая"};
     static final String[] BAR_SHORT = {"Верх", "Лево", "Низ", "Право"};
     static final int TOP = 0, LEFT = 1, BOTTOM = 2, RIGHT = 3, BARS = 4;
@@ -40,6 +40,7 @@ final class UiConfig {
         add(TOP, "menu", "brush", "eraser", "lasso", "picker", "fill", "fx", "layers", "color");
         add(LEFT, "size", "opacity", "undo", "redo", "symmetry", "ruler");
         add(BOTTOM, "play", "frames", "addFrame", "dupFrame", "delFrame", "onion", "boil", "fps");
+        add(RIGHT, "camera", "anim", "audio");
         vertical[TOP] = false;
         vertical[LEFT] = true;
         vertical[BOTTOM] = false;

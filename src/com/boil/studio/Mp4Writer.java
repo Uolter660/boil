@@ -18,7 +18,10 @@ final class Mp4Writer {
     private final MediaMuxer mux;
     private final MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
     private final int w, h, fps;
-    private int track = -1;
+    private int track = -1, audioTrack = -1;
+    private MediaFormat audioFormat;
+    private final java.util.ArrayList<byte[]> audioData = new java.util.ArrayList<>();
+    private final java.util.ArrayList<long[]> audioMeta = new java.util.ArrayList<>(); // pts, flags
     private boolean started, released;
     private long frames;
 
@@ -41,6 +44,76 @@ final class Mp4Writer {
             throw new IOException("кодек H.264 недоступен");
         }
         mux = new MediaMuxer(out.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+    }
+
+    /**
+     * Encodes the sound track to AAC up front (call before the first frame); its samples are written
+     * into the file as soon as the video track is ready.
+     */
+    void setAudio(short[] pcm, int rate, int channels) throws IOException {
+        MediaFormat af = MediaFormat.createAudioFormat("audio/mp4a-latm", rate, channels);
+        af.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+        af.setInteger(MediaFormat.KEY_BIT_RATE, 96000 * channels);
+        af.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
+        MediaCodec ae = MediaCodec.createEncoderByType("audio/mp4a-latm");
+        try {
+            ae.configure(af, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            ae.start();
+            MediaCodec.BufferInfo ai = new MediaCodec.BufferInfo();
+            int pos = 0;
+            boolean inDone = false;
+            int idle = 0;
+            while (true) {
+                if (!inDone) {
+                    int ii = ae.dequeueInputBuffer(TIMEOUT_US);
+                    if (ii >= 0) {
+                        ByteBuffer ib = ae.getInputBuffer(ii);
+                        ib.clear();
+                        ib.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                        int n = Math.min(pcm.length - pos, ib.remaining() / 2);
+                        n -= n % channels;
+                        long pts = (pos / channels) * 1_000_000L / rate;
+                        for (int i = 0; i < n; i++) ib.putShort(pcm[pos + i]);
+                        pos += n;
+                        if (pos >= pcm.length) {
+                            ae.queueInputBuffer(ii, 0, n * 2, pts, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                            inDone = true;
+                        } else {
+                            ae.queueInputBuffer(ii, 0, n * 2, pts, 0);
+                        }
+                    }
+                }
+                int oi = ae.dequeueOutputBuffer(ai, TIMEOUT_US);
+                if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    audioFormat = ae.getOutputFormat();
+                } else if (oi >= 0) {
+                    idle = 0;
+                    ByteBuffer ob = ae.getOutputBuffer(oi);
+                    if ((ai.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && ai.size > 0 && ob != null) {
+                        byte[] b = new byte[ai.size];
+                        ob.position(ai.offset);
+                        ob.get(b);
+                        audioData.add(b);
+                        audioMeta.add(new long[]{ai.presentationTimeUs, ai.flags});
+                    }
+                    ae.releaseOutputBuffer(oi, false);
+                    if ((ai.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break;
+                } else if (inDone && ++idle > 500) {
+                    throw new IOException("кодек звука не отвечает");
+                }
+            }
+        } finally {
+            try {
+                ae.stop();
+            } catch (RuntimeException ignored) {
+                // already stopped
+            }
+            ae.release();
+        }
+        if (audioFormat == null) {
+            audioData.clear();
+            audioMeta.clear();
+        }
     }
 
     void frame(int[] argb) throws IOException {
@@ -98,8 +171,20 @@ final class Mp4Writer {
                 if (++idle > 300) throw new IOException("кодек не завершил запись");
             } else if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 track = mux.addTrack(enc.getOutputFormat());
+                if (audioFormat != null) audioTrack = mux.addTrack(audioFormat);
                 mux.start();
                 started = true;
+                if (audioTrack >= 0) {
+                    MediaCodec.BufferInfo bi = new MediaCodec.BufferInfo();
+                    for (int i = 0; i < audioData.size(); i++) {
+                        byte[] b = audioData.get(i);
+                        long[] m = audioMeta.get(i);
+                        bi.set(0, b.length, m[0], (int) m[1] & ~MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        mux.writeSampleData(audioTrack, ByteBuffer.wrap(b), bi);
+                    }
+                    audioData.clear();
+                    audioMeta.clear();
+                }
             } else if (o >= 0) {
                 ByteBuffer b = enc.getOutputBuffer(o);
                 if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) info.size = 0;

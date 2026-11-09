@@ -526,6 +526,13 @@ final class Layer {
     boolean fxScale;
     float fxSpeed = .3f, fxAmount = .5f, fxRotate = .4f;
     /** Base point (doc coordinates) for layer effects and lasso transforms; unset means automatic. */
+    /** Distance of this layer's card behind the canvas plane, in focal lengths (negative = nearer). */
+    float depth;
+    /** Seen through the camera: fades in from frame appearAt and out from vanishAt (-1 = never). */
+    int appearAt = -1, vanishAt = -1;
+    /** Keyframed transform (position, scale, rotation, opacity, 3D tilt), applied in the camera view. */
+    ArrayList<Camera3D.LKey> keys = new ArrayList<>();
+    float appearLen = 4, vanishLen = 2;
     boolean hasPivot;
     float pivotX, pivotY;
     /** One entry per timeline frame; null means "hold the previous drawing". Index 0 is never null. */
@@ -569,6 +576,12 @@ final class Layer {
         l.hasPivot = hasPivot;
         l.pivotX = pivotX;
         l.pivotY = pivotY;
+        l.depth = depth;
+        for (Camera3D.LKey k : keys) l.keys.add(k.copy());
+        l.appearAt = appearAt;
+        l.vanishAt = vanishAt;
+        l.appearLen = appearLen;
+        l.vanishLen = vanishLen;
         for (Cel c : cels) l.cels.add(c == null ? null : c.copy());
         return l;
     }
@@ -579,13 +592,45 @@ final class Layer {
 }
 
 final class Doc {
-    static final int MAGIC = 0x424F494C, VERSION = 6;
+    static final int MAGIC = 0x424F494C, VERSION = 8;
 
     String name = "Без названия";
     int w, h, bg = 0xFFFFFFFF, fps = 8, frames = 1;
     /** Plays the line jitter; when off every stroke shows its first boil frame. */
     boolean boil = true;
     ArrayList<Layer> layers = new ArrayList<>();
+    /** Camera keyframes, sorted by frame. */
+    ArrayList<Camera3D.Key> cam = new ArrayList<>();
+
+    /** Sound track: decoded 16-bit PCM lives next to the project file; these describe it and its trim. */
+    boolean hasAudio;
+    String audioName = "";
+    int audioRate, audioChannels;
+    long audioFrames;
+    float audioStart, audioEnd, audioVolume = 1, audioFadeIn, audioFadeOut;
+    /** When true the video is as long as the trimmed sound (animation loops); otherwise as long as the animation. */
+    boolean lengthByAudio;
+    /** Motion blur on export: several sub-frames inside the shutter are averaged. */
+    boolean motionBlur;
+    float shutter = 0.5f;
+
+    float audioDuration() {
+        return hasAudio && audioRate > 0 ? audioFrames / (float) audioRate : 0;
+    }
+
+    void copyAudio(Doc to) {
+        to.hasAudio = hasAudio;
+        to.audioName = audioName;
+        to.audioRate = audioRate;
+        to.audioChannels = audioChannels;
+        to.audioFrames = audioFrames;
+        to.audioStart = audioStart;
+        to.audioEnd = audioEnd;
+        to.audioVolume = audioVolume;
+        to.audioFadeIn = audioFadeIn;
+        to.audioFadeOut = audioFadeOut;
+        to.lengthByAudio = lengthByAudio;
+    }
 
     Doc(int w, int h) {
         this.w = w;
@@ -606,6 +651,10 @@ final class Doc {
         d.fps = fps;
         d.frames = frames;
         d.boil = boil;
+        for (Camera3D.Key k : cam) d.cam.add(k.copy());
+        copyAudio(d);
+        d.motionBlur = motionBlur;
+        d.shutter = shutter;
         for (Layer l : layers) d.layers.add(l.copy());
         return d;
     }
@@ -627,6 +676,20 @@ final class Doc {
         for (Layer l : layers) l.cels.add(at, null);
         active.cels.set(at, duplicate ? src.copy() : new Cel());
         frames++;
+        for (Camera3D.Key k : cam) if (k.frame >= at) k.frame++;
+        for (Layer l : layers) {
+            if (l.appearAt >= at) l.appearAt++;
+            if (l.vanishAt >= at) l.vanishAt++;
+            for (Camera3D.LKey k : l.keys) if (k.frame >= at) k.frame++;
+        }
+    }
+
+    /** Adds holding frames at the end until the timeline has at least count frames. */
+    void extendTo(int count) {
+        while (frames < count) {
+            for (Layer l : layers) l.cels.add(null);
+            frames++;
+        }
     }
 
     void deleteFrame(int at) {
@@ -636,6 +699,20 @@ final class Doc {
             if (at == 0 && l.cels.get(0) == null) l.cels.set(0, removed != null ? removed : new Cel());
         }
         frames--;
+        for (int i = cam.size() - 1; i >= 0; i--) {
+            Camera3D.Key k = cam.get(i);
+            if (k.frame == at) cam.remove(i);
+            else if (k.frame > at) k.frame--;
+        }
+        for (Layer l : layers) {
+            if (l.appearAt > at) l.appearAt--;
+            if (l.vanishAt > at) l.vanishAt--;
+            for (int i = l.keys.size() - 1; i >= 0; i--) {
+                Camera3D.LKey k = l.keys.get(i);
+                if (k.frame == at) l.keys.remove(i);
+                else if (k.frame > at) k.frame--;
+            }
+        }
     }
 
     /** Why the layer at index i can't be merged into the one below, or null if it can. */
@@ -763,6 +840,11 @@ final class Doc {
             o.writeBoolean(l.hasPivot);
             o.writeFloat(l.pivotX);
             o.writeFloat(l.pivotY);
+            o.writeFloat(l.depth);
+            o.writeInt(l.appearAt);
+            o.writeFloat(l.appearLen);
+            o.writeInt(l.vanishAt);
+            o.writeFloat(l.vanishLen);
             for (int f = 0; f < frames; f++) {
                 Cel c = f < l.cels.size() ? l.cels.get(f) : null;
                 if (c == null) {
@@ -781,6 +863,53 @@ final class Doc {
 
     private static void writeTail(DataOutputStream o, Doc d) throws IOException {
         o.writeBoolean(d.boil);
+        o.writeInt(d.cam.size());
+        for (Camera3D.Key k : d.cam) {
+            o.writeInt(k.frame);
+            o.writeFloat(k.x);
+            o.writeFloat(k.y);
+            o.writeFloat(k.dolly);
+            o.writeFloat(k.roll);
+            o.writeFloat(k.yaw);
+            o.writeFloat(k.pitch);
+            o.writeFloat(k.focus);
+            o.writeFloat(k.blur);
+            o.writeFloat(k.zoom);
+            o.writeInt(k.ease);
+        }
+        o.writeBoolean(d.hasAudio);
+        o.writeUTF(d.audioName);
+        o.writeInt(d.audioRate);
+        o.writeInt(d.audioChannels);
+        o.writeLong(d.audioFrames);
+        o.writeFloat(d.audioStart);
+        o.writeFloat(d.audioEnd);
+        o.writeFloat(d.audioVolume);
+        o.writeFloat(d.audioFadeIn);
+        o.writeFloat(d.audioFadeOut);
+        o.writeBoolean(d.lengthByAudio);
+        // v8
+        for (Camera3D.Key k : d.cam) {
+            o.writeFloat(k.shake);
+            o.writeFloat(k.flash);
+            o.writeFloat(k.dip);
+        }
+        for (Layer l : d.layers) {
+            o.writeInt(l.keys.size());
+            for (Camera3D.LKey k : l.keys) {
+                o.writeInt(k.frame);
+                o.writeInt(k.ease);
+                o.writeFloat(k.x);
+                o.writeFloat(k.y);
+                o.writeFloat(k.scale);
+                o.writeFloat(k.rot);
+                o.writeFloat(k.opacity);
+                o.writeFloat(k.rotX);
+                o.writeFloat(k.rotY);
+            }
+        }
+        o.writeBoolean(d.motionBlur);
+        o.writeFloat(d.shutter);
     }
 
     private static void writeItem(DataOutputStream o, Item it) throws IOException {
@@ -913,6 +1042,13 @@ final class Doc {
                 l.pivotX = in.readFloat();
                 l.pivotY = in.readFloat();
             }
+            if (ver >= 7) {
+                l.depth = in.readFloat();
+                l.appearAt = in.readInt();
+                l.appearLen = in.readFloat();
+                l.vanishAt = in.readInt();
+                l.vanishLen = in.readFloat();
+            }
             for (int f = 0; f < d.frames; f++) {
                 if (in.readByte() == 0) {
                     l.cels.add(f == 0 ? new Cel() : null);
@@ -928,6 +1064,60 @@ final class Doc {
             d.layers.add(l);
         }
         if (ver >= 5) d.boil = in.readBoolean();
+        if (ver >= 7) {
+            int nk = in.readInt();
+            for (int i = 0; i < nk; i++) {
+                Camera3D.Key k = new Camera3D.Key();
+                k.frame = in.readInt();
+                k.x = in.readFloat();
+                k.y = in.readFloat();
+                k.dolly = in.readFloat();
+                k.roll = in.readFloat();
+                k.yaw = in.readFloat();
+                k.pitch = in.readFloat();
+                k.focus = in.readFloat();
+                k.blur = in.readFloat();
+                k.zoom = in.readFloat();
+                k.ease = in.readInt();
+                d.cam.add(k);
+            }
+            d.hasAudio = in.readBoolean();
+            d.audioName = in.readUTF();
+            d.audioRate = in.readInt();
+            d.audioChannels = in.readInt();
+            d.audioFrames = in.readLong();
+            d.audioStart = in.readFloat();
+            d.audioEnd = in.readFloat();
+            d.audioVolume = in.readFloat();
+            d.audioFadeIn = in.readFloat();
+            d.audioFadeOut = in.readFloat();
+            d.lengthByAudio = in.readBoolean();
+        }
+        if (ver >= 8) {
+            for (Camera3D.Key k : d.cam) {
+                k.shake = in.readFloat();
+                k.flash = in.readFloat();
+                k.dip = in.readFloat();
+            }
+            for (Layer l : d.layers) {
+                int nk = in.readInt();
+                for (int i = 0; i < nk; i++) {
+                    Camera3D.LKey k = new Camera3D.LKey();
+                    k.frame = in.readInt();
+                    k.ease = in.readInt();
+                    k.x = in.readFloat();
+                    k.y = in.readFloat();
+                    k.scale = in.readFloat();
+                    k.rot = in.readFloat();
+                    k.opacity = in.readFloat();
+                    k.rotX = in.readFloat();
+                    k.rotY = in.readFloat();
+                    l.keys.add(k);
+                }
+            }
+            d.motionBlur = in.readBoolean();
+            d.shutter = in.readFloat();
+        }
         if (d.layers.isEmpty()) d.layers.add(new Layer("Слой 1", d.frames));
         d.liftGroupEffects();
         return d;

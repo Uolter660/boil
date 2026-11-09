@@ -33,6 +33,9 @@ final class CanvasView extends View {
 
         /** A brush or eraser stroke started (true) or ended (false). */
         void onDrawing(boolean drawing);
+
+        /** Short message for the user (e.g. why a touch did nothing). */
+        void onHint(String text);
     }
 
     Doc doc;
@@ -114,6 +117,16 @@ final class CanvasView extends View {
     }
 
     // ---------- state ----------
+
+    /** Shows the final framed shot through the 3D camera (drawing is paused while on). */
+    boolean cameraView;
+    private final Camera3D.Key camKey = new Camera3D.Key();
+
+    /** Timeline position as a fractional frame, so the camera glides between keys while playing. */
+    float camFrame(float t) {
+        if (playing && doc.frames > 1) return ((t - playT0) * doc.fps) % doc.frames;
+        return frame;
+    }
 
     void setDoc(Doc d) {
         doc = d;
@@ -244,7 +257,14 @@ final class CanvasView extends View {
         extra.onion = onion && !playing;
         extra.freezeActive = live != null || !sel.isEmpty() || mode == M_LASSO;
         renderer.boilOn = doc.boil;
-        renderer.render(c, doc, frame, t, true, true, extra, null);
+        if (cameraView) {
+            renderer.camFrame = camFrame(t);
+            renderer.cam = Camera3D.at(doc.cam, renderer.camFrame, camKey);
+            renderer.render(c, doc, frame, t, true, true, null, null);
+            renderer.cam = null;
+        } else {
+            renderer.render(c, doc, frame, t, true, true, extra, null);
+        }
         c.restore();
         overlays(c, t);
         postInvalidateOnAnimation();
@@ -643,6 +663,11 @@ final class CanvasView extends View {
     private void toolDown(MotionEvent e) {
         downX = e.getX();
         downY = e.getY();
+        if (cameraView) {
+            mode = M_IGNORE;
+            if (host != null) host.onHint("Сейчас вид через камеру — выключите его, чтобы рисовать");
+            return;
+        }
         if (pivotMode || (tool == LASSO && onPivot(downX, downY))) {
             history.push(this);
             mode = M_PIVOT;

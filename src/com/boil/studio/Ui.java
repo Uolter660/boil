@@ -217,6 +217,9 @@ final class Ui {
             case "fliph": return "M12 3V21M9 7L3 17H9ZM15 7L21 17H15Z";
             case "flipv": return "M3 12H21M7 9L17 3V9ZM7 15L17 21V15Z";
             case "tip": return "O12 12 7D12 12 3";
+            case "key": return "M12 4L20 12L12 20L4 12ZM12 9L15 12L12 15L9 12Z";
+            case "camera": return "M3 8H15V18H3ZM15 11L21 8V18L15 15M6 5H11";
+            case "audio": return "M9 17V6L19 4V15O7 17 2.5O17 15 2.5";
             case "boil": return "M3 12C5 8 7 8 9 12C11 16 13 16 15 12C17 8 19 8 21 12";
             case "rotl": return "M8 4H4V8M4 8C6 4.5 9 3.5 12 3.5C16.7 3.5 20.5 7.3 20.5 12C20.5 16.7 16.7 20.5 12 20.5C8.5 20.5 5.5 18.5 4.3 15.5";
             case "rotr": return "M16 4H20V8M20 8C18 4.5 15 3.5 12 3.5C7.3 3.5 3.5 7.3 3.5 12C3.5 16.7 7.3 20.5 12 20.5C15.5 20.5 18.5 18.5 19.7 15.5";
@@ -601,6 +604,97 @@ final class Ui {
             if (l != null) l.onColor(color(), done);
             invalidate();
             return true;
+        }
+    }
+
+    /**
+     * Waveform with a trimmed selection: drag the left or right handle to trim, drag inside to slide
+     * the whole selection along the sound.
+     */
+    static final class Wave extends View {
+        interface Listener {
+            void onTrim(float start, float end, boolean done);
+        }
+
+        float[] peaks = new float[0];
+        float duration = 1, start, end = 1;
+        Listener l;
+        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int grab;
+        private float downX, s0, e0;
+
+        Wave(Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onMeasure(int w, int h) {
+            setMeasuredDimension(MeasureSpec.getSize(w), dp(84));
+        }
+
+        private float xOf(float sec) {
+            return dp(10) + (getWidth() - dp(20)) * sec / Math.max(0.001f, duration);
+        }
+
+        private float secOf(float x) {
+            return (x - dp(10)) / Math.max(1, getWidth() - dp(20)) * duration;
+        }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            float w = getWidth(), h = getHeight(), mid = h / 2, x0 = dp(10), x1 = w - dp(10);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(0xFF202020);
+            c.drawRoundRect(new RectF(0, 0, w, h), dp(12), dp(12), p);
+            float sx = xOf(start), ex = xOf(end);
+            p.setColor(0x22FFFFFF);
+            c.drawRect(sx, dp(4), ex, h - dp(4), p);
+            p.setStrokeWidth(Math.max(1, dp(1.5f)));
+            int n = peaks.length;
+            for (int i = 0; i < n; i++) {
+                float x = x0 + (x1 - x0) * i / Math.max(1, n - 1);
+                float a = Math.max(0.02f, peaks[i]) * (h / 2 - dp(8));
+                p.setColor(x >= sx && x <= ex ? 0xFFFFFFFF : 0xFF555555);
+                c.drawLine(x, mid - a, x, mid + a, p);
+            }
+            p.setColor(0xFFFFFFFF);
+            c.drawRoundRect(new RectF(sx - dp(3), dp(4), sx + dp(3), h - dp(4)), dp(3), dp(3), p);
+            c.drawRoundRect(new RectF(ex - dp(3), dp(4), ex + dp(3), h - dp(4)), dp(3), dp(3), p);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            float x = e.getX();
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    getParent().requestDisallowInterceptTouchEvent(true);
+                    float ds = Math.abs(x - xOf(start)), de = Math.abs(x - xOf(end));
+                    grab = ds < dp(22) && ds <= de ? 1 : de < dp(22) ? 2 : (x > xOf(start) && x < xOf(end) ? 3 : 0);
+                    downX = x;
+                    s0 = start;
+                    e0 = end;
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float min = Math.min(0.3f, duration);
+                    if (grab == 1) start = Math.max(0, Math.min(end - min, secOf(x)));
+                    else if (grab == 2) end = Math.min(duration, Math.max(start + min, secOf(x)));
+                    else if (grab == 3) {
+                        float dsec = secOf(x) - secOf(downX), len = e0 - s0;
+                        start = Math.max(0, Math.min(duration - len, s0 + dsec));
+                        end = start + len;
+                    }
+                    if (grab != 0 && l != null) l.onTrim(start, end, false);
+                    invalidate();
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (grab != 0 && l != null) l.onTrim(start, end, true);
+                    grab = 0;
+                    return true;
+                default:
+                    return true;
+            }
         }
     }
 

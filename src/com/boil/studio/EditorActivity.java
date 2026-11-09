@@ -11,6 +11,8 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -65,7 +67,12 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     private String panel;
     private Runnable panelRefresh;
     private String id;
-    private static final int PICK_PICTURE = 11, PICK_REFERENCE = 12;
+    private static final int PICK_PICTURE = 11, PICK_REFERENCE = 12, PICK_AUDIO = 13, PICK_VIDEO_AUDIO = 14;
+    private final AudioClip.Player player = new AudioClip.Player();
+    private float[] peaks = new float[0];
+    private boolean previewing;
+    private int transN = 12;
+    private Ui.Icon camI;
     private RefView ref;
     private View selAll, selRest;
     private boolean dirty, busy;
@@ -110,6 +117,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         immersive();
         syncAll();
         File rf = Storage.refFile(this, id);
+        if (cv.doc.hasAudio) loadPeaks();
         if (rf.exists()) {
             Bitmap rb = android.graphics.BitmapFactory.decodeFile(rf.getAbsolutePath());
             if (rb != null) showRef(rb);
@@ -414,6 +422,11 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                 }
                 cv.setPlaying(!cv.playing);
                 playI.setName(cv.playing ? "pause" : "play");
+                if (cv.playing && cv.doc.hasAudio) {
+                    player.start(Storage.audioFile(EditorActivity.this, id), cv.doc, cv.frame / (float) cv.doc.fps);
+                } else {
+                    player.stop();
+                }
             }
         });
         controls.put("play", playI);
@@ -475,6 +488,25 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             }
         });
         controls.put("fps", fpsT);
+        camI = icon("camera", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("camera", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
+        controls.put("camera", camI);
+        controls.put("anim", icon("key", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("anim", Gravity.TOP | Gravity.RIGHT);
+            }
+        }));
+        controls.put("audio", icon("audio", new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+            }
+        }));
     }
 
     private static void detach(View v) {
@@ -667,6 +699,11 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     }
 
     @Override
+    public void onHint(String text) {
+        showHint(text, true);
+    }
+
+    @Override
     public void onDrawing(boolean drawing) {
         if (!ui.fadeWhileDrawing) return;
         barLayer.animate().alpha(drawing ? 0.12f : 1f).setDuration(drawing ? 120 : 220).start();
@@ -805,6 +842,11 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         Layer L = cv.activeLayer();
         for (int i = 0; i < frameStrip.getChildCount(); i++) {
             TextView c = (TextView) frameStrip.getChildAt(i);
+            boolean camKey = Camera3D.keyAt(cv.doc.cam, i) != null;
+            boolean layerKey = Camera3D.layerKeyAt(L.keys, i) != null;
+            c.setTypeface(android.graphics.Typeface.create("sans-serif", layerKey ? android.graphics.Typeface.BOLD_ITALIC : android.graphics.Typeface.BOLD));
+            c.setPaintFlags(camKey ? c.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG
+                    : c.getPaintFlags() & ~android.graphics.Paint.UNDERLINE_TEXT_FLAG);
             boolean key = i < L.cels.size() && L.cels.get(i) != null;
             if (i == cv.frame) {
                 c.setBackground(Ui.round(0xFFFFFFFF, 10, 0));
@@ -917,12 +959,13 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     @Override
     public void onFrame() {
         styleFrames();
-        if (panelRefresh != null && "layers".equals(panel)) panelRefresh.run();
+        if (panelRefresh != null && ("layers".equals(panel) || "camera".equals(panel) || "anim".equals(panel))) panelRefresh.run();
     }
 
     @Override
     public void onPlayStopped() {
         playI.setName("play");
+        if (!previewing) player.stop();
     }
 
     private void setColor(int c, boolean remember) {
@@ -961,6 +1004,15 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                 break;
             case "fx":
                 fxPanel(content);
+                break;
+            case "anim":
+                animPanel(content);
+                break;
+            case "camera":
+                cameraPanel(content);
+                break;
+            case "audio":
+                audioPanel(content);
                 break;
             case "ui":
                 uiPanel(content);
@@ -1407,6 +1459,31 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         LinearLayout.LayoutParams opl = new LinearLayout.LayoutParams(-1, -2);
         opl.topMargin = dp(6);
         c.addView(op, opl);
+        final Ui.Slider depth = new Ui.Slider(this, "Глубина 3D (для камеры)", 0, null);
+        depth.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                float z = Math.round((-0.6f + v * 3.6f) * 20) / 20f;
+                cv.activeLayer().depth = z;
+                depth.set(v, depthText(z));
+            }
+
+            @Override
+            void end() {
+                dirty = true;
+                if (!cv.cameraView) showHint("Глубину видно через камеру: панель «Камера» → «Смотреть через камеру»", true);
+            }
+        };
+        c.addView(depth, new LinearLayout.LayoutParams(-1, -2));
+        final Runnable layerRefresh = panelRefresh;
+        panelRefresh = new Runnable() {
+            @Override
+            public void run() {
+                if (layerRefresh != null) layerRefresh.run();
+                float z = cv.activeLayer().depth;
+                depth.set((z + 0.6f) / 3.6f, depthText(z));
+            }
+        };
         panelRefresh = new Runnable() {
             @Override
             public void run() {
@@ -1472,7 +1549,10 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
             names.setPadding(dp(12), 0, dp(6), 0);
             names.addView(Ui.text(this, L.name, 14, L.visible ? Ui.TEXT : Ui.DIM, true));
             String sub = (L.hasEffect() ? (L.effect != 0 ? Layer.FX_NAME[L.effect] : "Пульсация") : "Без эффекта")
-                    + (L.opacity < 0.995f ? " · " + Math.round(L.opacity * 100) + "%" : "");
+                    + (L.opacity < 0.995f ? " · " + Math.round(L.opacity * 100) + "%" : "")
+                    + (L.depth != 0 ? String.format(Locale.US, " · глубина %+.2f", L.depth) : "")
+                    + (L.appearAt >= 0 ? " · появляется с " + (L.appearAt + 1) : "")
+                    + (L.vanishAt >= 0 ? " · исчезает на " + (L.vanishAt + 1) : "");
             TextView st = Ui.text(this, sub, 11, Ui.DIM, false);
             st.setPadding(0, dp(4), 0, 0);
             names.addView(st);
@@ -1881,9 +1961,1010 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         }
     }
 
+    private static String depthText(float z) {
+        if (Math.abs(z) < 0.001f) return "0 · на холсте";
+        return String.format(Locale.US, "%+.2f · %s", z, z < 0 ? "ближе" : "дальше");
+    }
+
+    private static String clock(float sec) {
+        int m = (int) (sec / 60);
+        return String.format(Locale.US, "%d:%04.1f", m, sec - m * 60);
+    }
+
+    // ---------- camera ----------
+
+    private void syncCamera() {
+        camI.setActive(cv.cameraView);
+    }
+
+    /** Camera and 3D transitions: view toggle, per-frame camera keys, transition presets. */
+    private void cameraPanel(LinearLayout c) {
+        final Doc d = cv.doc;
+        header(c, "Камера и переходы", "слои с глубиной превращаются в 3D-сцену");
+        toggleRow(c, "Смотреть через камеру", cv.cameraView, new Done() {
+            @Override
+            public void done(String s) {
+                cv.cameraView = !cv.cameraView;
+                syncCamera();
+            }
+        });
+        final TextView status = Ui.text(this, "", 12, Ui.DIM, false);
+        status.setPadding(0, dp(4), 0, dp(4));
+        c.addView(status);
+
+        final String[] names = {"Наезд", "Сдвиг по X", "Сдвиг по Y", "Поворот", "3D поворот", "Наклон", "Фокус (глубина)",
+                "Размытие не в фокусе", "Зум", "Тряска", "Вспышка", "Затемнение"};
+        final float[] lo = {-1f, -1f, -1f, -180f, -90f, -60f, -0.6f, 0f, 0.3f, 0f, 0f, 0f};
+        final float[] hi = {1.5f, 1f, 1f, 180f, 90f, 60f, 3f, 1f, 3f, 1f, 1f, 1f};
+        final ArrayList<Ui.Slider> sl = new ArrayList<>();
+        for (int i = 0; i < names.length; i++) {
+            final int fi = i;
+            final Ui.Slider s = new Ui.Slider(this, names[i], 0, null);
+            s.l = new Ui.OnSlide() {
+                @Override
+                void change(float v) {
+                    Camera3D.Key k = Camera3D.ensureKey(d.cam, cv.frame);
+                    float val = lo[fi] + v * (hi[fi] - lo[fi]);
+                    switch (fi) {
+                        case 0: k.dolly = val; break;
+                        case 1: k.x = val * d.w; break;
+                        case 2: k.y = val * d.h; break;
+                        case 3: k.roll = val; break;
+                        case 4: k.yaw = val; break;
+                        case 5: k.pitch = val; break;
+                        case 6: k.focus = val; break;
+                        case 7: k.blur = val; break;
+                        case 8: k.zoom = val; break;
+                        case 9: k.shake = val; break;
+                        case 10: k.flash = val; break;
+                        default: k.dip = val; break;
+                    }
+                    if (!cv.cameraView) {
+                        cv.cameraView = true;
+                        syncCamera();
+                    }
+                    dirty = true;
+                    if (panelRefresh != null) panelRefresh.run();
+                }
+
+                @Override
+                void end() {
+                    styleFrames();
+                }
+            };
+            sl.add(s);
+            c.addView(s, new LinearLayout.LayoutParams(-1, -2));
+        }
+
+        final Runnable[] camEase = new Runnable[1];
+        label(c, "Движение к следующему ключу");
+        camEase[0] = easeRow(c, new EaseTarget() {
+            @Override
+            public int get() {
+                Camera3D.Key k = Camera3D.keyAt(d.cam, cv.frame);
+                return k == null ? -1 : k.ease;
+            }
+
+            @Override
+            public void set(int e) {
+                Camera3D.ensureKey(d.cam, cv.frame).ease = e;
+                dirty = true;
+                styleFrames();
+            }
+        });
+        toggleRow(c, "Размытие движения при экспорте", d.motionBlur, new Done() {
+            @Override
+            public void done(String s) {
+                d.motionBlur = !d.motionBlur;
+                dirty = true;
+            }
+        });
+        final Ui.Slider shutter = new Ui.Slider(this, "Выдержка (сила размытия движения)", 0, null);
+        shutter.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                d.shutter = 0.1f + v * 0.9f;
+                shutter.set(v, Math.round(d.shutter * 360) + "°");
+                dirty = true;
+            }
+        };
+        shutter.set((d.shutter - 0.1f) / 0.9f, Math.round(d.shutter * 360) + "°");
+        c.addView(shutter, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout keys = Ui.row(this);
+        keys.setPadding(0, dp(6), 0, dp(4));
+        TextView del = Ui.button(this, "Удалить ключ", false);
+        del.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Camera3D.Key k = Camera3D.keyAt(d.cam, cv.frame);
+                if (k == null) {
+                    showHint("На этом кадре нет ключа камеры", true);
+                    return;
+                }
+                d.cam.remove(k);
+                dirty = true;
+                styleFrames();
+                if (panelRefresh != null) panelRefresh.run();
+            }
+        });
+        keys.addView(del, Ui.lpw(1));
+        TextView reset = Ui.button(this, "Сбросить камеру", false);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                d.cam.clear();
+                for (Layer l : d.layers) {
+                    l.appearAt = -1;
+                    l.vanishAt = -1;
+                }
+                dirty = true;
+                styleFrames();
+                if (panelRefresh != null) panelRefresh.run();
+                showHint("Камера сброшена", true);
+            }
+        });
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(0, -2, 1);
+        rl.leftMargin = dp(8);
+        keys.addView(reset, rl);
+        c.addView(keys, new LinearLayout.LayoutParams(-1, -2));
+
+        label(c, "Переходы · от текущего кадра");
+        LinearLayout lens = Ui.row(this);
+        final int[] lengths = {8, 12, 24};
+        final ArrayList<TextView> chips = new ArrayList<>();
+        for (final int len : lengths) {
+            final TextView ch = Ui.text(this, len + " кадров", 12, Ui.TEXT, true);
+            ch.setGravity(Gravity.CENTER);
+            ch.setPadding(dp(8), dp(8), dp(8), dp(8));
+            ch.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    transN = len;
+                    for (int i = 0; i < chips.size(); i++) {
+                        boolean on = lengths[i] == transN;
+                        chips.get(i).setBackground(Ui.round(on ? 0xFFFFFFFF : Ui.CHIP, 10, 0));
+                        chips.get(i).setTextColor(on ? 0xFF000000 : Ui.TEXT);
+                    }
+                }
+            });
+            boolean on = len == transN;
+            ch.setBackground(Ui.round(on ? 0xFFFFFFFF : Ui.CHIP, 10, 0));
+            ch.setTextColor(on ? 0xFF000000 : Ui.TEXT);
+            chips.add(ch);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
+            lp.rightMargin = dp(6);
+            lens.addView(ch, lp);
+        }
+        c.addView(lens, new LinearLayout.LayoutParams(-1, -2));
+        String[] tn = {"Перевод на новый план", "Сквозь передний план", "Быстрая панорама", "Слайд", "Наплыв", "Зум-рывок",
+                "Вращение", "Вспышка", "Затемнение", "Тряска удара", "Появление с пружиной",
+                "Наезд", "Отъезд", "3D облёт", "Переворот", "Панорама"};
+        String[] th = {"старый рисунок уезжает вбок и размывается, новый проявляется в фокусе",
+                "камера пролетает сквозь ближний рисунок, он размывается", "рывок вбок с размытием движения",
+                "старый уезжает, новый выезжает", "плавная смена рисунков", "влёт в старый, вылет из нового",
+                "закрутка с размытием движения", "белая вспышка, смена на пике", "уход в чёрное и обратно",
+                "удар камеры и затухающая тряска", "рисунок выпрыгивает с отскоком",
+                "плавное приближение", "плавное отдаление", "сцена поворачивается в 3D", "разворот на 180°", "сдвиг вбок с параллаксом"};
+        final int[] types = {6, 0, 7, 8, 9, 10, 11, 13, 14, 12, 15, 1, 2, 3, 4, 5};
+        for (int i = 0; i < tn.length; i++) {
+            final int type = types[i];
+            LinearLayout row = Ui.col(this);
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            row.setBackground(Ui.round(0xFF202020, 12, 0));
+            row.setClickable(true);
+            row.addView(Ui.text(this, tn[i], 14, Ui.TEXT, true));
+            TextView h = Ui.text(this, th[i], 11, Ui.DIM, false);
+            h.setPadding(0, dp(3), 0, 0);
+            row.addView(h);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    transition(type);
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+            lp.topMargin = dp(6);
+            c.addView(row, lp);
+        }
+        TextView tip = Ui.text(this, "Для переходов нужны два слоя: старый рисунок ближе (глубина −0.3), новый — дальше "
+                + "(глубина 0.6–1) и сбоку или за старым. «Перевод на новый план»: камера переезжает на новый рисунок, "
+                + "старый увеличивается, уходит вбок и размывается, новый проявляется и становится резким, потом старый исчезает. "
+                + "Глубина слоя — в панели «Слои».", 11, Ui.FAINT, false);
+        tip.setPadding(dp(4), dp(10), dp(4), dp(2));
+        tip.setLineSpacing(dp(2), 1);
+        c.addView(tip);
+
+        panelRefresh = new Runnable() {
+            @Override
+            public void run() {
+                Camera3D.Key k = Camera3D.at(d.cam, cv.frame, null);
+                boolean has = Camera3D.keyAt(d.cam, cv.frame) != null;
+                status.setText("Кадр " + (cv.frame + 1) + (has ? " · ключ камеры" : d.cam.isEmpty()
+                        ? " · ключей нет — двигайте ползунки" : " · между ключами"));
+                float[] vals = {k.dolly, k.x / d.w, k.y / d.h, k.roll, k.yaw, k.pitch, k.focus, k.blur, k.zoom, k.shake, k.flash, k.dip};
+                for (int i = 0; i < sl.size(); i++) {
+                    float v = (vals[i] - lo[i]) / (hi[i] - lo[i]);
+                    String txt = i == 3 || i == 4 || i == 5 ? Math.round(vals[i]) + "°"
+                            : i == 7 || i >= 9 ? Math.round(vals[i] * 100) + "%" : i == 8 ? String.format(Locale.US, "%.2f×", vals[i])
+                            : String.format(Locale.US, "%+.2f", vals[i]);
+                    sl.get(i).set(v, txt);
+                }
+                if (camEase[0] != null) camEase[0].run();
+            }
+        };
+        panelRefresh.run();
+    }
+
+    /** Builds camera keys for a transition preset from the current frame, extending the timeline if needed. */
+    private void transition(int type) {
+        Doc d = cv.doc;
+        int f0 = cv.frame, f1 = f0 + transN;
+        if (type >= 7) {
+            motionTransition(type, f0);
+            return;
+        }
+        if (type == 6 || type == 0) {
+            cv.history.push(cv);
+            Planes pl = planes(f0, true);
+            if (pl == null) {
+                cv.history.undo.remove(cv.history.undo.size() - 1);
+                showHint("Нужно два рисунка: нарисуйте новый на следующем кадре таймлайна или на другом слое", true);
+                return;
+            }
+            f0 = pl.start;
+            f1 = f0 + transN;
+            if (type == 6) refocusTransition(pl, f0, f1);
+            else flyThrough(pl, f0, f1);
+            return;
+        }
+        cv.history.push(cv);
+        d.extendTo(f1 + 1);
+        Camera3D.Key a = Camera3D.ensureKey(d.cam, f0);
+        Camera3D.Key b = Camera3D.ensureKey(d.cam, f1);
+        int keep = b.frame;
+        b.lerp(a, a, 0);
+        b.frame = keep;
+        switch (type) {
+            case 1:
+                b.dolly = a.dolly + 0.35f;
+                break;
+            case 2:
+                b.dolly = a.dolly - 0.35f;
+                break;
+            case 3:
+                a.yaw = -25;
+                b.yaw = 25;
+                b.dolly = a.dolly + 0.1f;
+                break;
+            case 4:
+                b.yaw = a.yaw + 180;
+                break;
+            default:
+                b.x = a.x + d.w * 0.4f;
+                break;
+        }
+        cv.cameraView = true;
+        syncCamera();
+        dirty = true;
+        cv.changed();
+        if (type != 0 || d.layers.size() > 1) showHint("Переход: кадры " + (f0 + 1) + "–" + (f1 + 1) + " · нажмите ▶", true);
+    }
+
+    /**
+     * Rack-focus move to a new subject: the camera glides (fast start, soft landing) to frame the far
+     * layer; the near layer grows, slides off and blurs by parallax; the far layer fades in and comes
+     * into focus; after a hold the near layer disappears.
+     */
+    private void refocusTransition(Planes pl, int f0, int f1) {
+        Doc d = cv.doc;
+        Layer nearL = pl.near, farL = pl.far;
+        int hold = transN;
+        d.extendTo(f1 + hold + 3);
+        float zn = nearL.depth, zf = farL.depth;
+        RectF fb = new RectF(d.cel(farL, Math.min(f1, d.frames - 1)).bounds());
+        if (fb.isEmpty()) fb.set(d.cel(farL, f0).bounds());
+        float px = fb.isEmpty() ? d.w / 2f : fb.centerX(), py = fb.isEmpty() ? d.h / 2f : fb.centerY();
+        if (Math.abs(px - d.w / 2f) < d.w * 0.15f) {
+            // both drawings sit in the middle: put the new one beside the old so the camera has somewhere
+            // to travel and the old drawing slides off to the side (it ends centred on screen anyway)
+            RectF nb = d.cel(nearL, f0).bounds();
+            float side = !nb.isEmpty() && nb.centerX() > d.w / 2f ? -1 : 1;
+            float dx = side * d.w * 0.3f;
+            for (Cel cel : farL.cels) {
+                if (cel == null) continue;
+                for (int i = 0; i < cel.items.size(); i++) cel.items.set(i, cel.items.get(i).moved(dx, 0));
+                cel.touch();
+            }
+            if (farL.hasPivot) farL.pivotX += dx;
+            px += dx;
+        }
+        Camera3D.Key a = Camera3D.ensureKey(d.cam, f0);
+        a.ease = 1;
+        a.focus = zn;
+        a.blur = Math.max(a.blur, 0.7f);
+        Camera3D.Key b = Camera3D.ensureKey(d.cam, f1);
+        int keep = b.frame;
+        b.lerp(a, a, 0);
+        b.frame = keep;
+        b.ease = 0;
+        b.dolly = a.dolly + 0.57f * (1 + zn - a.dolly);
+        b.zoom = 1.1f * (1 + zf - b.dolly) / (1 + zf);
+        // centre the new subject: its on-screen offset is (p - c - pan) * scale
+        b.x = px - d.w / 2f;
+        b.y = py - d.h / 2f;
+        b.focus = zf;
+        farL.appearAt = f0;
+        farL.appearLen = Math.max(2, transN * 0.5f);
+        nearL.vanishAt = f1 + hold;
+        nearL.vanishLen = 2;
+        cv.cameraView = true;
+        syncCamera();
+        dirty = true;
+        cv.changed();
+        showHint("Перевод на новый план: кадры " + (f0 + 1) + "–" + (f1 + hold + 3) + " · нажмите ▶", true);
+    }
+
+    /** The old drawing (near card) and the new one (far card) of a transition, and where it starts. */
+    private static final class Planes {
+        Layer near, far;
+        int start;
+    }
+
+    /**
+     * Finds or builds the two planes for a transition at frame f. If the active layer changes drawing on
+     * the timeline ("frame to frame"), the new drawing and everything after it moves to a new layer behind
+     * the old one. If the drawings are already on separate layers, they get depths when they have none.
+     * Returns null (and changes nothing) when there is only one drawing.
+     */
+    private Planes planes(int f, boolean depth) {
+        Doc d = cv.doc;
+        Layer L = cv.activeLayer();
+        int next = -1, start = f;
+        for (int g = f + 1; g < d.frames; g++) {
+            if (L.cels.get(g) != null) {
+                next = g;
+                break;
+            }
+        }
+        int cur = d.keyIndex(L, f);
+        if (next < 0 && cur > 0) { // standing on the new drawing: the old one is the drawing before it
+            next = cur;
+            start = cur - 1;
+        }
+        Planes p = new Planes();
+        if (next >= 0 && !L.cels.get(next).items.isEmpty() && !d.cel(L, start).items.isEmpty()) {
+            Layer far = new Layer(L.name + " · новый план", d.frames);
+            Cel nb = L.cels.get(next);
+            for (int g = next; g < d.frames; g++) {
+                if (g != next) far.cels.set(g, L.cels.get(g));
+                L.cels.set(g, null); // the old drawing stays on screen as the near card
+            }
+            far.cels.set(start, nb);
+            if (start != 0 && far.cels.get(0) == null) far.cels.set(0, new Cel());
+            if (depth) {
+                if (L.depth > -0.2f) L.depth = -0.3f;
+                far.depth = L.depth + 0.9f;
+            } else {
+                far.depth = L.depth;
+            }
+            d.layers.add(d.layers.indexOf(L), far);
+            cv.layer = d.layers.indexOf(L);
+            p.near = L;
+            p.far = far;
+            p.start = start;
+            return p;
+        }
+        Layer other = null;
+        for (Layer l : d.layers) {
+            if (l == L || !l.visible || d.cel(l, f).items.isEmpty()) continue;
+            if (other == null || Math.abs(l.depth - L.depth) > Math.abs(other.depth - L.depth)) other = l;
+        }
+        if (other == null || d.cel(L, f).items.isEmpty()) return null;
+        Layer near = L, far = other;
+        if (!depth) {
+            // 2D transitions keep the user's depths; the old drawing is the active layer
+        } else if (Math.abs(near.depth - far.depth) < 0.2f) {
+            near.depth = -0.3f;
+            far.depth = 0.6f;
+        } else if (near.depth > far.depth) {
+            near = other;
+            far = L;
+        }
+        int ni = d.layers.indexOf(near), fi = d.layers.indexOf(far);
+        if (fi > ni) { // the new scene has to be drawn behind the old drawing
+            d.layers.remove(fi);
+            d.layers.add(ni, far);
+            cv.layer = d.layers.indexOf(L);
+        }
+        p.near = near;
+        p.far = far;
+        p.start = f;
+        return p;
+    }
+
+    /** Fly through the old drawing into the new one, with a rack focus and a counter-zoom. */
+    private void flyThrough(Planes pl, int f0, int f1) {
+        Doc d = cv.doc;
+        d.extendTo(f1 + 1);
+        float near = pl.near.depth, far = pl.far.depth;
+        Camera3D.Key a = Camera3D.ensureKey(d.cam, f0);
+        Camera3D.Key b = Camera3D.ensureKey(d.cam, f1);
+        int keep = b.frame;
+        b.lerp(a, a, 0);
+        b.frame = keep;
+        a.focus = near;
+        a.blur = Math.max(a.blur, 0.6f);
+        b.focus = far;
+        b.blur = a.blur;
+        b.dolly = 1 + near + Math.min(0.12f, (far - near) * 0.5f);
+        b.zoom = a.zoom * (1 + far - b.dolly) / Math.max(0.05f, 1 + far - a.dolly);
+        pl.far.appearAt = f0;
+        pl.far.appearLen = Math.max(2, transN * 0.4f);
+        cv.cameraView = true;
+        syncCamera();
+        dirty = true;
+        cv.changed();
+        showHint("Сквозь передний план: кадры " + (f0 + 1) + "–" + (f1 + 1) + " · нажмите ▶", true);
+    }
+
+    /** Layer-key and camera-overlay transitions in the style of motion-graphics editors. */
+    private void motionTransition(int type, int f0) {
+        Doc d = cv.doc;
+        int n = transN, f1 = f0 + n, mid = f0 + n / 2;
+        boolean needsTwo = type == 7 || type == 8 || type == 9 || type == 10 || type == 11;
+        cv.history.push(cv);
+        Planes pl = type == 12 || type == 15 ? null : planes(f0, false);
+        if (needsTwo && pl == null) {
+            cv.history.undo.remove(cv.history.undo.size() - 1);
+            showHint("Нужно два рисунка: нарисуйте новый на следующем кадре таймлайна или на другом слое", true);
+            return;
+        }
+        if (pl != null) {
+            f0 = pl.start;
+            f1 = f0 + n;
+            mid = f0 + n / 2;
+        }
+        d.extendTo(f1 + 1);
+        float W = d.w;
+        switch (type) {
+            case 7: { // whip pan
+                key(pl.near, f0, 0, Camera3D.EASE_IN);
+                key(pl.near, mid, 0, Camera3D.EASE_LINEAR).x = -W * 1.3f;
+                key(pl.far, f0, 0, Camera3D.EASE_LINEAR).x = W * 1.3f;
+                key(pl.far, mid, 0, Camera3D.EASE_OUT).x = W * 1.3f;
+                key(pl.far, f1, 0, Camera3D.EASE_LINEAR);
+                d.motionBlur = true;
+                break;
+            }
+            case 8: // slide
+                key(pl.near, f0, 0, Camera3D.EASE_SMOOTH);
+                key(pl.near, f1, 0, Camera3D.EASE_SMOOTH).x = -W;
+                key(pl.far, f0, 0, Camera3D.EASE_SMOOTH).x = W;
+                key(pl.far, f1, 0, Camera3D.EASE_SMOOTH);
+                break;
+            case 9: // crossfade
+                key(pl.near, f0, 0, Camera3D.EASE_SMOOTH);
+                key(pl.near, f1, 0, Camera3D.EASE_SMOOTH).opacity = 0;
+                key(pl.far, f0, 0, Camera3D.EASE_SMOOTH).opacity = 0;
+                key(pl.far, f1, 0, Camera3D.EASE_SMOOTH);
+                break;
+            case 10: { // zoom punch
+                key(pl.near, f0, 0, Camera3D.EASE_IN);
+                Camera3D.LKey a = key(pl.near, mid, 0, Camera3D.EASE_LINEAR);
+                a.scale = 3.2f;
+                a.opacity = 0;
+                key(pl.far, f0, 0, Camera3D.EASE_LINEAR).scale = 0.35f;
+                key(pl.far, mid, 0, Camera3D.EASE_OUT).scale = 0.35f;
+                key(pl.far, f1, 0, Camera3D.EASE_LINEAR);
+                switchAt(pl, mid);
+                d.motionBlur = true;
+                break;
+            }
+            case 11: { // spin
+                key(pl.near, f0, 0, Camera3D.EASE_IN);
+                Camera3D.LKey a = key(pl.near, mid, 0, Camera3D.EASE_LINEAR);
+                a.rot = 180;
+                a.scale = 0.3f;
+                a.opacity = 0;
+                Camera3D.LKey b = key(pl.far, f0, 0, Camera3D.EASE_LINEAR);
+                b.rot = -180;
+                b.scale = 0.3f;
+                switchAt(pl, mid);
+                Camera3D.LKey b2 = key(pl.far, mid, 0, Camera3D.EASE_OUT);
+                b2.rot = -180;
+                b2.scale = 0.3f;
+                key(pl.far, f1, 0, Camera3D.EASE_LINEAR);
+                d.motionBlur = true;
+                break;
+            }
+            case 12: { // impact shake
+                Camera3D.Key a = Camera3D.ensureKey(d.cam, f0);
+                a.shake = 1;
+                a.ease = Camera3D.EASE_OUT;
+                Camera3D.ensureKey(d.cam, f1).shake = 0;
+                break;
+            }
+            case 13:
+            case 14: { // flash / dip to black, switching drawings at the peak
+                Camera3D.ensureKey(d.cam, f0).ease = Camera3D.EASE_IN;
+                Camera3D.Key m = Camera3D.ensureKey(d.cam, mid);
+                m.ease = Camera3D.EASE_OUT;
+                Camera3D.Key e = Camera3D.ensureKey(d.cam, f1);
+                if (type == 13) m.flash = 1;
+                else m.dip = 1;
+                e.flash = 0;
+                e.dip = 0;
+                if (pl != null) {
+                    pl.near.vanishAt = mid;
+                    pl.near.vanishLen = 0.5f;
+                    pl.far.appearAt = mid;
+                    pl.far.appearLen = 0.5f;
+                }
+                break;
+            }
+            default: { // pop in with a spring
+                Layer L = cv.activeLayer();
+                Camera3D.LKey a = key(L, f0, 0, Camera3D.EASE_BACK);
+                a.scale = 0;
+                a.opacity = 0;
+                key(L, f1, 0, Camera3D.EASE_SMOOTH);
+                break;
+            }
+        }
+        cv.cameraView = true;
+        syncCamera();
+        dirty = true;
+        cv.changed();
+        showHint("Переход: кадры " + (f0 + 1) + "–" + (f1 + 1) + " · нажмите ▶"
+                + (d.motionBlur ? " · размытие движения будет в экспорте" : ""), true);
+    }
+
+    /** Hard switch between the two drawings at a frame (old hides, new shows). */
+    private static void switchAt(Planes pl, int frame) {
+        pl.near.vanishAt = frame;
+        pl.near.vanishLen = 1;
+        pl.far.appearAt = frame;
+        pl.far.appearLen = 1;
+    }
+
+    /** Layer key at a frame reset to rest values (dummy keeps call sites short). */
+    private static Camera3D.LKey key(Layer l, int frame, int dummy, int ease) {
+        Camera3D.LKey k = Camera3D.ensureLayerKey(l.keys, frame);
+        k.x = 0;
+        k.y = 0;
+        k.scale = 1;
+        k.rot = 0;
+        k.opacity = 1;
+        k.rotX = 0;
+        k.rotY = 0;
+        k.ease = ease;
+        return k;
+    }
+
+    interface EaseTarget {
+        /** Ease of the key at the current frame, or -1 when there is no key. */
+        int get();
+
+        void set(int ease);
+    }
+
+    /** Chips for the motion curve; returns a refresher that re-reads the current key. */
+    private Runnable easeRow(LinearLayout c, final EaseTarget t) {
+        final ArrayList<TextView> chips = new ArrayList<>();
+        LinearLayout row = null;
+        for (int i = 0; i < Camera3D.EASE_NAME.length; i++) {
+            if (i % 4 == 0) {
+                row = Ui.row(this);
+                LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
+                rp.bottomMargin = dp(6);
+                c.addView(row, rp);
+            }
+            final int e = i;
+            TextView ch = Ui.text(this, Camera3D.EASE_NAME[i], 12, Ui.TEXT, true);
+            ch.setGravity(Gravity.CENTER);
+            ch.setPadding(dp(4), dp(8), dp(4), dp(8));
+            ch.setSingleLine(true);
+            ch.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    t.set(e);
+                    for (int j = 0; j < chips.size(); j++) {
+                        chips.get(j).setBackground(Ui.round(j == e ? 0xFFFFFFFF : Ui.CHIP, 10, 0));
+                        chips.get(j).setTextColor(j == e ? 0xFF000000 : Ui.TEXT);
+                    }
+                }
+            });
+            chips.add(ch);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1);
+            lp.rightMargin = dp(4);
+            row.addView(ch, lp);
+        }
+        if (row != null) for (int i = Camera3D.EASE_NAME.length % 4; i > 0 && i < 4; i++) row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        Runnable refresh = new Runnable() {
+            @Override
+            public void run() {
+                int cur = t.get();
+                for (int j = 0; j < chips.size(); j++) {
+                    chips.get(j).setBackground(Ui.round(j == cur ? 0xFFFFFFFF : Ui.CHIP, 10, 0));
+                    chips.get(j).setTextColor(j == cur ? 0xFF000000 : (cur < 0 ? Ui.FAINT : Ui.TEXT));
+                }
+            }
+        };
+        refresh.run();
+        return refresh;
+    }
+
+    /** After-Effects-style layer animation: keyed position, scale, rotation, opacity and 3D tilt. */
+    private void animPanel(LinearLayout c) {
+        final Doc d = cv.doc;
+        final Layer L = cv.activeLayer();
+        header(c, "Анимация слоя", L.name + " · ключи на кадрах");
+        final TextView status = Ui.text(this, "", 12, Ui.DIM, false);
+        status.setPadding(0, 0, 0, dp(4));
+        c.addView(status);
+        final String[] names = {"Позиция X", "Позиция Y", "Масштаб", "Поворот", "Прозрачность", "3D наклон X", "3D поворот Y"};
+        final float[] lo = {-1f, -1f, 0f, -360f, 0f, -90f, -90f};
+        final float[] hi = {1f, 1f, 3f, 360f, 1f, 90f, 90f};
+        final ArrayList<Ui.Slider> sl = new ArrayList<>();
+        for (int i = 0; i < names.length; i++) {
+            final int fi = i;
+            final Ui.Slider s = new Ui.Slider(this, names[i], 0, null);
+            s.l = new Ui.OnSlide() {
+                @Override
+                void change(float v) {
+                    Camera3D.LKey k = Camera3D.ensureLayerKey(L.keys, cv.frame);
+                    float val = lo[fi] + v * (hi[fi] - lo[fi]);
+                    switch (fi) {
+                        case 0: k.x = val * d.w; break;
+                        case 1: k.y = val * d.h; break;
+                        case 2: k.scale = val; break;
+                        case 3: k.rot = val; break;
+                        case 4: k.opacity = val; break;
+                        case 5: k.rotX = val; break;
+                        default: k.rotY = val; break;
+                    }
+                    if (!cv.cameraView) {
+                        cv.cameraView = true;
+                        syncCamera();
+                    }
+                    dirty = true;
+                    if (panelRefresh != null) panelRefresh.run();
+                }
+
+                @Override
+                void end() {
+                    styleFrames();
+                }
+            };
+            sl.add(s);
+            c.addView(s, new LinearLayout.LayoutParams(-1, -2));
+        }
+        label(c, "Движение к следующему ключу");
+        final Runnable easeRefresh = easeRow(c, new EaseTarget() {
+            @Override
+            public int get() {
+                Camera3D.LKey k = Camera3D.layerKeyAt(L.keys, cv.frame);
+                return k == null ? -1 : k.ease;
+            }
+
+            @Override
+            public void set(int e) {
+                Camera3D.ensureLayerKey(L.keys, cv.frame).ease = e;
+                dirty = true;
+                styleFrames();
+            }
+        });
+        LinearLayout btns = Ui.row(this);
+        btns.setPadding(0, dp(4), 0, dp(4));
+        TextView del = Ui.button(this, "Удалить ключ", false);
+        del.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Camera3D.LKey k = Camera3D.layerKeyAt(L.keys, cv.frame);
+                if (k == null) {
+                    showHint("На этом кадре нет ключа слоя", true);
+                    return;
+                }
+                L.keys.remove(k);
+                dirty = true;
+                styleFrames();
+                if (panelRefresh != null) panelRefresh.run();
+            }
+        });
+        btns.addView(del, Ui.lpw(1));
+        TextView reset = Ui.button(this, "Сбросить анимацию", false);
+        reset.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                L.keys.clear();
+                dirty = true;
+                styleFrames();
+                if (panelRefresh != null) panelRefresh.run();
+            }
+        });
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(0, -2, 1);
+        rl.leftMargin = dp(8);
+        btns.addView(reset, rl);
+        c.addView(btns, new LinearLayout.LayoutParams(-1, -2));
+        TextView tip = Ui.text(this, "Двигайте ползунки на разных кадрах — между ключами слой движется сам. Центр поворота и масштаба — "
+                + "точка основы слоя. Анимацию видно через камеру (включается сама). Номера кадров с ключами слоя — курсивом.", 11, Ui.FAINT, false);
+        tip.setPadding(dp(4), dp(8), dp(4), dp(2));
+        tip.setLineSpacing(dp(2), 1);
+        c.addView(tip);
+        panelRefresh = new Runnable() {
+            @Override
+            public void run() {
+                Camera3D.LKey k = Camera3D.layerAt(L.keys, cv.frame, null);
+                boolean has = Camera3D.layerKeyAt(L.keys, cv.frame) != null;
+                status.setText("Кадр " + (cv.frame + 1) + (has ? " · ключ слоя" : L.keys.isEmpty()
+                        ? " · ключей нет — двигайте ползунки" : " · между ключами"));
+                float[] vals = {k.x / d.w, k.y / d.h, k.scale, k.rot, k.opacity, k.rotX, k.rotY};
+                for (int i = 0; i < sl.size(); i++) {
+                    float v = (vals[i] - lo[i]) / (hi[i] - lo[i]);
+                    String txt = i == 3 || i >= 5 ? Math.round(vals[i]) + "°" : i == 4 ? Math.round(vals[i] * 100) + "%"
+                            : i == 2 ? String.format(Locale.US, "%.2f×", vals[i]) : String.format(Locale.US, "%+.2f", vals[i]);
+                    sl.get(i).set(v, txt);
+                }
+                easeRefresh.run();
+            }
+        };
+        panelRefresh.run();
+    }
+
+    // ---------- sound ----------
+
+    private void loadPeaks() {
+        final File f = Storage.audioFile(this, id);
+        final Doc d = cv.doc;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final float[] p = AudioClip.peaks(f, d, 160);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        peaks = p;
+                        if ("audio".equals(panel)) {
+                            togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+                            togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void pickSound(boolean fromVideo) {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType(fromVideo ? "video/*" : "audio/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(Intent.createChooser(i, fromVideo ? "Выберите видео" : "Выберите звук"), fromVideo ? PICK_VIDEO_AUDIO : PICK_AUDIO);
+        } catch (Exception e) {
+            showHint("Нет приложения для выбора файлов", true);
+        }
+    }
+
+    private void importSound(final Uri uri, final boolean fromVideo) {
+        player.stop();
+        previewing = false;
+        showHint(fromVideo ? "Достаю звук из видео…" : "Загружаю звук…", false);
+        final Doc probe = cv.doc.copy();
+        final File out = Storage.audioFile(this, id), tmp = new File(out.getPath() + ".tmp");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    AudioClip.decode(getContentResolver(), uri, tmp, probe);
+                    String name = displayName(uri);
+                    probe.audioName = name != null ? name : (fromVideo ? "звук из видео" : "звук");
+                    if (!tmp.renameTo(out)) throw new IOException("не удалось сохранить");
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            probe.copyAudio(cv.doc);
+                            dirty = true;
+                            peaks = new float[0];
+                            loadPeaks();
+                            showHint("Звук добавлен · обрежьте его на дорожке", true);
+                            togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+                            if (!"audio".equals(panel)) togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+                        }
+                    });
+                } catch (final Exception e) {
+                    tmp.delete();
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            showHint("Не удалось взять звук: " + e.getMessage(), true);
+                        }
+                    });
+                }
+            }
+        }).start();
+    }
+
+    private String displayName(Uri uri) {
+        android.database.Cursor cur = null;
+        try {
+            cur = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (cur != null && cur.moveToFirst()) return cur.getString(0);
+        } catch (Exception ignored) {
+            // name is optional
+        } finally {
+            if (cur != null) cur.close();
+        }
+        return null;
+    }
+
+    /** Sound panel: import from an audio file or a video, trim on the waveform, volume and fades. */
+    private void audioPanel(LinearLayout c) {
+        final Doc d = cv.doc;
+        header(c, "Звук", d.hasAudio ? d.audioName : "музыка или звук для видео MP4");
+        LinearLayout src = Ui.row(this);
+        TextView fromFile = Ui.button(this, "Звук из файла", !d.hasAudio);
+        fromFile.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pickSound(false);
+            }
+        });
+        src.addView(fromFile, Ui.lpw(1));
+        TextView fromVideo = Ui.button(this, "Взять звук из видео", !d.hasAudio);
+        fromVideo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                pickSound(true);
+            }
+        });
+        LinearLayout.LayoutParams vp = new LinearLayout.LayoutParams(0, -2, 1);
+        vp.leftMargin = dp(8);
+        src.addView(fromVideo, vp);
+        c.addView(src, new LinearLayout.LayoutParams(-1, -2));
+        if (!d.hasAudio) {
+            TextView tip = Ui.text(this, "Подойдёт любой аудиофайл или видео — из видео возьмётся только звук.", 11, Ui.FAINT, false);
+            tip.setPadding(dp(4), dp(10), dp(4), 0);
+            c.addView(tip);
+            return;
+        }
+        final File file = Storage.audioFile(this, id);
+        final TextView range = Ui.text(this, "", 13, Ui.TEXT, true);
+        range.setPadding(0, dp(14), 0, dp(6));
+        c.addView(range);
+        final Runnable showRange = new Runnable() {
+            @Override
+            public void run() {
+                range.setText(clock(d.audioStart) + " — " + clock(d.audioEnd) + "   ·   "
+                        + String.format(Locale.US, "%.1f с", d.audioEnd - d.audioStart));
+            }
+        };
+        showRange.run();
+        Ui.Wave wave = new Ui.Wave(this);
+        wave.peaks = peaks;
+        wave.duration = d.audioDuration();
+        wave.start = d.audioStart;
+        wave.end = d.audioEnd;
+        wave.l = new Ui.Wave.Listener() {
+            @Override
+            public void onTrim(float start, float end, boolean done) {
+                d.audioStart = start;
+                d.audioEnd = end;
+                dirty = true;
+                showRange.run();
+                if (done && previewing) player.start(file, d, 0);
+            }
+        };
+        c.addView(wave, new LinearLayout.LayoutParams(-1, -2));
+        TextView wt = Ui.text(this, "Тяните края, чтобы обрезать, середину — чтобы сдвинуть отрезок", 11, Ui.FAINT, false);
+        wt.setPadding(dp(4), dp(6), 0, dp(6));
+        c.addView(wt);
+
+        LinearLayout btns = Ui.row(this);
+        final TextView listen = Ui.button(this, previewing ? "Стоп" : "Прослушать", true);
+        listen.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (previewing) {
+                    player.stop();
+                    previewing = false;
+                } else {
+                    player.start(file, d, 0);
+                    previewing = true;
+                }
+                listen.setText(previewing ? "Стоп" : "Прослушать");
+            }
+        });
+        btns.addView(listen, Ui.lpw(1));
+        TextView remove = Ui.button(this, "Удалить звук", false);
+        remove.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                player.stop();
+                previewing = false;
+                d.hasAudio = false;
+                file.delete();
+                dirty = true;
+                togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+                togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+                showHint("Звук удалён", true);
+            }
+        });
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(0, -2, 1);
+        rp.leftMargin = dp(8);
+        btns.addView(remove, rp);
+        c.addView(btns, new LinearLayout.LayoutParams(-1, -2));
+
+        final Ui.Slider vol = new Ui.Slider(this, "Громкость", 0, null);
+        vol.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                d.audioVolume = Math.round(v * 150) / 100f;
+                vol.set(v, Math.round(d.audioVolume * 100) + "%");
+                dirty = true;
+            }
+        };
+        vol.set(d.audioVolume / 1.5f, Math.round(d.audioVolume * 100) + "%");
+        LinearLayout.LayoutParams vl = new LinearLayout.LayoutParams(-1, -2);
+        vl.topMargin = dp(8);
+        c.addView(vol, vl);
+        final Ui.Slider fin = new Ui.Slider(this, "Плавное появление", 0, null);
+        fin.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                d.audioFadeIn = Math.round(v * 30) / 10f;
+                fin.set(v, String.format(Locale.US, "%.1f с", d.audioFadeIn));
+                dirty = true;
+            }
+        };
+        fin.set(d.audioFadeIn / 3f, String.format(Locale.US, "%.1f с", d.audioFadeIn));
+        c.addView(fin, new LinearLayout.LayoutParams(-1, -2));
+        final Ui.Slider fout = new Ui.Slider(this, "Плавное затухание", 0, null);
+        fout.l = new Ui.OnSlide() {
+            @Override
+            void change(float v) {
+                d.audioFadeOut = Math.round(v * 30) / 10f;
+                fout.set(v, String.format(Locale.US, "%.1f с", d.audioFadeOut));
+                dirty = true;
+            }
+        };
+        fout.set(d.audioFadeOut / 3f, String.format(Locale.US, "%.1f с", d.audioFadeOut));
+        c.addView(fout, new LinearLayout.LayoutParams(-1, -2));
+        toggleRow(c, "Длина видео по звуку", d.lengthByAudio, new Done() {
+            @Override
+            public void done(String s) {
+                d.lengthByAudio = !d.lengthByAudio;
+                dirty = true;
+                showHint(d.lengthByAudio ? "Видео будет длиной с обрезанный звук, анимация повторится"
+                        : "Видео будет длиной с анимацию, звук обрежется по ней", true);
+            }
+        });
+        TextView tip = Ui.text(this, "Звук попадает в видео MP4 и играет при ▶ в редакторе. В GIF звука нет.", 11, Ui.FAINT, false);
+        tip.setPadding(dp(4), dp(8), dp(4), 0);
+        c.addView(tip);
+    }
+
     private void menuPanel(LinearLayout c) {
         Doc d = cv.doc;
         header(c, d.name, d.w + " × " + d.h + " · " + d.frames + " " + plural(d.frames, "кадр", "кадра", "кадров") + " · " + d.fps + " к/с");
+        menuRow(c, "key", "Анимация слоя", new Runnable() {
+            @Override
+            public void run() {
+                togglePanel("anim", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
+        menuRow(c, "camera", "Камера и переходы", new Runnable() {
+            @Override
+            public void run() {
+                togglePanel("camera", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
+        menuRow(c, "audio", "Звук", new Runnable() {
+            @Override
+            public void run() {
+                togglePanel("audio", Gravity.TOP | Gravity.RIGHT);
+            }
+        });
         menuRow(c, "sliders", "Настроить интерфейс", new Runnable() {
             @Override
             public void run() {
@@ -2126,6 +3207,8 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                     Renderer r = new Renderer();
                     r.useCache = false;
                     r.boilOn = d.boil;
+                    r.camFrame = frame;
+                    r.cam = Camera3D.active(d) ? Camera3D.at(d.cam, frame, null) : null;
                     r.render(new Canvas(bmp), d, frame, t, true, true, null, null);
                     ByteArrayOutputStream bos = new ByteArrayOutputStream();
                     bmp.compress(Bitmap.CompressFormat.PNG, 100, bos);
@@ -2206,6 +3289,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         final Doc d = cv.doc.copy();
         final String name = fileName("mp4");
         final File tmp = new File(getCacheDir(), "export.mp4");
+        final File audioFile = Storage.audioFile(this, id);
         showHint("Экспорт видео…", false);
         new Thread(new Runnable() {
             @Override
@@ -2222,6 +3306,7 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                     float loop = d.frames > 1 ? d.frames / (float) d.fps : 0;
                     float dur = loop > 0 ? loop * (float) Math.ceil(6f / loop) : 6f;
                     dur = Math.min(dur, 30f);
+                    if (d.hasAudio && d.lengthByAudio) dur = Math.max(0.5f, Math.min(180f, d.audioEnd - d.audioStart));
                     int n = Math.max(1, Math.round(dur * fps));
                     Bitmap bmp = Bitmap.createBitmap(vw, vh, Bitmap.Config.ARGB_8888);
                     Canvas cc = new Canvas(bmp);
@@ -2230,14 +3315,19 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
                     r.useCache = false;
                     r.boilOn = d.boil;
                     mw = new Mp4Writer(tmp, vw, vh, fps);
+                    if (d.hasAudio && audioFile.exists()) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                hint.setText("Кодирую звук…");
+                            }
+                        });
+                        mw.setAudio(AudioClip.render(audioFile, d, n / (float) fps), d.audioRate, d.audioChannels);
+                    }
+                    Shot shot = new Shot(vw, vh);
                     for (int i = 0; i < n; i++) {
                         float t = i / (float) fps;
-                        int frame = d.frames > 1 ? ((int) (t * d.fps)) % d.frames : 0;
-                        bmp.eraseColor(0xFFFFFFFF);
-                        cc.save();
-                        cc.scale(sx, sy);
-                        r.render(cc, d, frame, t, true, true, null, null);
-                        cc.restore();
+                        shot.render(r, d, cc, bmp, sx, sy, t);
                         bmp.getPixels(px, 0, vw, 0, 0, vw, vh);
                         mw.frame(px);
                         final int pct = (i + 1) * 100 / n;
@@ -2272,13 +3362,51 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     }
 
     private static void renderGifFrame(Renderer r, Doc d, Canvas cc, Bitmap bmp, int[] px, float s, float t) {
-        int frame = d.frames > 1 ? ((int) (t * d.fps)) % d.frames : 0;
-        bmp.eraseColor(0xFFFFFFFF);
-        cc.save();
-        cc.scale(s, s);
-        r.render(cc, d, frame, t, true, true, null, null);
-        cc.restore();
+        new Shot(bmp.getWidth(), bmp.getHeight()).render(r, d, cc, bmp, s, s, t);
         bmp.getPixels(px, 0, bmp.getWidth(), 0, 0, bmp.getWidth(), bmp.getHeight());
+    }
+
+    /**
+     * Renders one exported frame through the camera. With motion blur on, several instants inside the
+     * shutter are averaged (line jitter stays at the frame's own time so lines don't ghost).
+     */
+    private static final class Shot {
+        private final Camera3D.Key key = new Camera3D.Key();
+        private final Bitmap acc;
+        private final Canvas accC;
+        private final Paint p = new Paint(Paint.FILTER_BITMAP_FLAG);
+
+        Shot(int w, int h) {
+            acc = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            accC = new Canvas(acc);
+        }
+
+        void render(Renderer r, Doc d, Canvas cc, Bitmap bmp, float sx, float sy, float t) {
+            if (!d.motionBlur) {
+                instant(r, d, cc, bmp, sx, sy, t, t);
+                return;
+            }
+            int samples = 6;
+            float span = d.shutter / d.fps;
+            for (int i = 0; i < samples; i++) {
+                float tt = Math.max(0, t + (i / (float) (samples - 1) - 0.5f) * span);
+                instant(r, d, cc, bmp, sx, sy, tt, t);
+                p.setAlpha(255 / (i + 1));
+                accC.drawBitmap(bmp, 0, 0, p);
+            }
+            new Canvas(bmp).drawBitmap(acc, 0, 0, null);
+        }
+
+        private void instant(Renderer r, Doc d, Canvas cc, Bitmap bmp, float sx, float sy, float tt, float boilT) {
+            int frame = d.frames > 1 ? ((int) (tt * d.fps)) % d.frames : 0;
+            r.camFrame = (tt * d.fps) % d.frames;
+            r.cam = Camera3D.active(d) ? Camera3D.at(d.cam, r.camFrame, key) : null;
+            bmp.eraseColor(0xFFFFFFFF);
+            cc.save();
+            cc.scale(sx, sy);
+            r.render(cc, d, frame, boilT, true, true, null, null);
+            cc.restore();
+        }
     }
 
     private void finishExport(final String msg, final Uri shareUri, final String mime) {
@@ -2320,6 +3448,10 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
         super.onActivityResult(req, res, data);
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         final Uri uri = data.getData();
+        if (req == PICK_AUDIO || req == PICK_VIDEO_AUDIO) {
+            importSound(uri, req == PICK_VIDEO_AUDIO);
+            return;
+        }
         final Doc d = cv.doc;
         showHint("Загрузка картинки…", false);
         new Thread(new Runnable() {
@@ -2419,6 +3551,8 @@ public class EditorActivity extends Activity implements CanvasView.Host, RefView
     @Override
     protected void onPause() {
         super.onPause();
+        player.stop();
+        previewing = false;
         saveNow();
         savePrefs();
     }

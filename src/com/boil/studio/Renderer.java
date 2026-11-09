@@ -1,5 +1,6 @@
 package com.boil.studio;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
@@ -39,6 +40,17 @@ final class Renderer {
     private boolean fxOn = true;
     /** Line jitter playback; when off, every stroke and fill stays on its first boil frame. */
     boolean boilOn = true;
+    /** Camera state for this render; null draws the flat canvas (drawing mode). */
+    Camera3D.Key cam;
+    /** Fractional timeline frame for the camera render (layer fades); set together with cam. */
+    float camFrame;
+    private final Camera3D cam3 = new Camera3D();
+    private final Matrix camM = new Matrix(), texM = new Matrix();
+    private final Camera3D.Key shot = new Camera3D.Key();
+    private final Camera3D.LKey lk = new Camera3D.LKey();
+    private final Matrix keyM = new Matrix();
+    private Bitmap blurBmp;
+    private int[] blurBuf;
     private final Path scratch = new Path();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint layerPaint = new Paint();
@@ -91,6 +103,13 @@ final class Renderer {
             paint.setColor(d.bg);
             c.drawRect(0, 0, d.w, d.h, paint);
         }
+        // camera state for this frame, including handheld shake
+        Camera3D.Key k = null;
+        if (cam != null) {
+            shot.lerp(cam, cam, 0);
+            Camera3D.applyShake(shot, camFrame, d);
+            k = shot;
+        }
         for (int i = 0; i < d.layers.size(); i++) {
             Layer L = d.layers.get(i);
             if (only != null && L != only) continue;
@@ -100,10 +119,35 @@ final class Renderer {
             Cel cel = d.cel(L, frame);
             boolean hasLive = active && ex.live != null && ex.live.n > 0;
             if (cel.items.isEmpty() && !hasLive) continue;
+            boolean camOn = k != null && only == null;
+            float camAlpha = 1;
+            boolean keyed = false;
+            if (camOn) {
+                camAlpha = cam3.layerMatrix(d, L, k, camM) * Camera3D.fade(L, camFrame);
+                if (!L.keys.isEmpty()) {
+                    Camera3D.layerAt(L.keys, camFrame, lk);
+                    camAlpha *= Math.max(0, Math.min(1, lk.opacity));
+                    if (!lk.identity()) {
+                        RectF b = cel.bounds();
+                        float ax = L.hasPivot ? L.pivotX : b.isEmpty() ? d.w / 2f : b.centerX();
+                        float ay = L.hasPivot ? L.pivotY : b.isEmpty() ? d.h / 2f : b.centerY();
+                        cam3.layerTransform(lk, ax, ay, keyM, Camera3D.focal(d));
+                        keyed = true;
+                    }
+                }
+                if (camAlpha <= 0.002f) continue; // the camera has passed this card, or it is faded out
+                float b = Camera3D.blur(d, L, k);
+                if (b >= 1.2f) {
+                    drawBlurred(c, d, L, cel, t, effects, b, camAlpha, k, keyed);
+                    continue;
+                }
+            }
             int save = c.save();
+            if (camOn) c.concat(camM);
+            if (keyed) c.concat(keyM);
             boolean freeze = active && ex.freezeActive;
             if (effects && !freeze && L.hasEffect() && effectMatrix(L, cel.bounds(), t, fx)) c.concat(fx);
-            c.saveLayerAlpha(null, Math.round(L.opacity * 255), Canvas.ALL_SAVE_FLAG);
+            c.saveLayerAlpha(null, Math.round(L.opacity * camAlpha * 255), Canvas.ALL_SAVE_FLAG);
             Set<Item> sel = active ? ex.sel : null;
             drawCel(c, cel, t, sel, false);
             if (sel != null && !sel.isEmpty()) {
@@ -128,6 +172,47 @@ final class Renderer {
             }
             c.restoreToCount(save);
         }
+        if (k != null && only == null && (k.flash > 0.002f || k.dip > 0.002f)) {
+            paint.reset();
+            if (k.dip > 0.002f) {
+                paint.setColor(0xFF000000);
+                paint.setAlpha(Math.round(Math.min(1, k.dip) * 255));
+                c.drawRect(0, 0, d.w, d.h, paint);
+            }
+            if (k.flash > 0.002f) {
+                paint.setColor(0xFFFFFFFF);
+                paint.setAlpha(Math.round(Math.min(1, k.flash) * 255));
+                c.drawRect(0, 0, d.w, d.h, paint);
+            }
+        }
+    }
+
+    /** Depth-of-field: render the layer small, blur it, and draw it back through the camera projection. */
+    private void drawBlurred(Canvas c, Doc d, Layer L, Cel cel, float t, boolean effects, float blurPx, float alpha,
+                             Camera3D.Key k, boolean keyed) {
+        float s = Camera3D.scale(d, L, k) * (keyed ? Math.max(0.05f, lk.scale) : 1);
+        float r = blurPx / Math.max(0.05f, s);
+        float q = Math.max(0.04f, Math.min(1f, 2.5f / r));
+        int tw = Math.max(1, Math.round(d.w * q)), th = Math.max(1, Math.round(d.h * q));
+        if (blurBmp == null || blurBmp.getWidth() != tw || blurBmp.getHeight() != th) {
+            if (blurBmp != null) blurBmp.recycle();
+            blurBmp = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888);
+        }
+        if (blurBuf == null || blurBuf.length < tw * th) blurBuf = new int[tw * th];
+        blurBmp.eraseColor(0);
+        Canvas bc = new Canvas(blurBmp);
+        bc.scale(q, q);
+        if (keyed) bc.concat(keyM);
+        if (effects && L.hasEffect() && effectMatrix(L, cel.bounds(), t, fx)) bc.concat(fx);
+        drawCel(bc, cel, t, null, false);
+        Camera3D.blurBitmap(blurBmp, Math.max(1, Math.min(14, Math.round(r * q))), blurBuf);
+        texM.set(camM);
+        texM.preScale(1 / q, 1 / q);
+        paint.reset();
+        paint.setFilterBitmap(true);
+        paint.setAntiAlias(true);
+        paint.setAlpha(Math.round(L.opacity * alpha * 255));
+        c.drawBitmap(blurBmp, texM, paint);
     }
 
     private void drawOnion(Canvas c, Doc d, Layer L, int frame, float t) {
