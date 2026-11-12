@@ -149,6 +149,20 @@ final class CanvasView extends View {
         return doc.cel(activeLayer(), frame);
     }
 
+    /**
+     * The drawing to change at the current frame. A held frame (one that only repeats an earlier
+     * drawing) first gets its own copy of what it shows, so edits never reach back into earlier frames.
+     */
+    Cel editableCel() {
+        Layer l = activeLayer();
+        if (frame < l.cels.size() && l.cels.get(frame) == null) {
+            Cel c = doc.cel(l, frame).copy();
+            l.cels.set(frame, c);
+            return c;
+        }
+        return doc.cel(l, frame);
+    }
+
     BrushSettings settings() {
         return tool == ERASER ? eraser : brushes[brush];
     }
@@ -975,7 +989,7 @@ final class CanvasView extends View {
             live.add(sx, sy, lp);
         }
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         cel.items.add(live);
         for (int m = 1; m <= 3; m++) {
             if ((sym & m) != m) continue;
@@ -1071,6 +1085,7 @@ final class CanvasView extends View {
         }
         if (split) {
             history.push(this);
+            cel = editableCel();
             cel.items.clear();
             cel.items.addAll(next);
             cel.touch();
@@ -1103,7 +1118,7 @@ final class CanvasView extends View {
         history.push(this);
         RectF b = selBounds(0);
         float cx = pivotX(b), cy = pivotY(b);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         HashSet<Item> out = new HashSet<>();
         for (int i = 0; i < cel.items.size(); i++) {
             Item it = cel.items.get(i);
@@ -1125,7 +1140,7 @@ final class CanvasView extends View {
             return;
         }
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         HashSet<Item> moved = new HashSet<>();
         for (int i = 0; i < cel.items.size(); i++) {
             Item it = cel.items.get(i);
@@ -1155,7 +1170,7 @@ final class CanvasView extends View {
     void deleteSelection() {
         if (sel.isEmpty()) return;
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         cel.items.removeAll(sel);
         cel.touch();
         clearSelection();
@@ -1186,7 +1201,7 @@ final class CanvasView extends View {
         history.push(this);
         RectF b = selBounds(0);
         float cx = pivotX(b), cy = pivotY(b);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         HashSet<Item> turned = new HashSet<>();
         for (int i = 0; i < cel.items.size(); i++) {
             Item it = cel.items.get(i);
@@ -1256,7 +1271,7 @@ final class CanvasView extends View {
     private void transformSelection(float sc, float rot, float cx, float cy, float dx, float dy) {
         if (sel.isEmpty()) return;
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         HashSet<Item> out = new HashSet<>();
         for (int i = 0; i < cel.items.size(); i++) {
             Item it = cel.items.get(i);
@@ -1279,7 +1294,7 @@ final class CanvasView extends View {
         history.push(this);
         RectF b = selBounds(0);
         float cx = pivotX(b), cy = pivotY(b);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         HashSet<Item> scaled = new HashSet<>();
         for (int i = 0; i < cel.items.size(); i++) {
             Item it = cel.items.get(i);
@@ -1299,7 +1314,7 @@ final class CanvasView extends View {
     void insert(Item it) {
         clearSelection();
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         cel.items.add(it);
         cel.touch();
         sel.add(it);
@@ -1310,7 +1325,7 @@ final class CanvasView extends View {
     void duplicateSelection() {
         if (sel.isEmpty()) return;
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         float off = 24;
         ArrayList<Item> copies = new ArrayList<>();
         for (Item it : cel.items) if (sel.contains(it)) copies.add(it.moved(off, off));
@@ -1348,7 +1363,7 @@ final class CanvasView extends View {
         Fill f = Filler.flood(renderer, doc, frame, (int) x, (int) y, c, bs, rnd.nextInt(1 << 20));
         if (f == null) return;
         history.push(this);
-        Cel cel = activeCel();
+        Cel cel = editableCel();
         cel.items.add(f);
         cel.touch();
         changed();
